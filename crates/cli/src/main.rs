@@ -1,4 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::{Value, json};
+use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Programmatic video renderer. Every feature is reachable from this command.
@@ -35,6 +39,17 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         frame: u32,
     },
+    /// Engine smoke test: render a built-in 1080x1920 page, check every frame, write frame0.png and smoke.mp4
+    Smoke {
+        /// Output directory
+        #[arg(long, default_value = "out")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 300)]
+        frames: u32,
+        /// ffmpeg video encoder [default: h264_nvenc, h264_videotoolbox on macOS]
+        #[arg(long)]
+        encoder: Option<String>,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
@@ -46,25 +61,117 @@ enum Codec {
     Prores,
 }
 
+const WIDTH: u32 = 1080;
+const HEIGHT: u32 = 1920;
+const FPS: u32 = 30;
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let name = match cli.command {
-        Command::Studio => "studio",
-        Command::Render { .. } => "render",
-        Command::Still { .. } => "still",
-    };
-    let error = format!("`karka {name}` is not implemented yet");
-    if cli.json {
-        // shortcut: hand-built JSON is safe only for this fixed ASCII message, switch to serde_json with the first real output
-        println!(r#"{{"ok":false,"error":"{error}"}}"#);
-    } else {
-        eprintln!("error: {error}");
+    // On macOS CEF subprocesses run from the separate karka_helper binary instead.
+    #[cfg(not(target_os = "macos"))]
+    if let Some(code) = karkataka_engine::run_subprocess() {
+        return ExitCode::from(code as u8);
     }
-    ExitCode::FAILURE
+
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Command::Studio => Err("`karka studio` is not implemented yet".to_string()),
+        Command::Render { .. } => Err("`karka render` is not implemented yet".to_string()),
+        Command::Still { .. } => Err("`karka still` is not implemented yet".to_string()),
+        Command::Smoke { out, frames, encoder } => smoke(&out, frames, encoder.as_deref()),
+    };
+    match result {
+        Ok(value) => {
+            if cli.json {
+                println!("{}", json!({ "ok": true, "result": value }));
+            } else {
+                println!("{}", serde_json::to_string_pretty(&value).unwrap());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            if cli.json {
+                println!("{}", json!({ "ok": false, "error": error }));
+            } else {
+                eprintln!("error: {error}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The page draws frame `n` as 16 black/white cells (bit i = cell i) so each capture can be checked.
+const SMOKE_PAGE: &str = include_str!("smoke.html");
+const CELL: u32 = 40;
+const SAFE_LEFT: u32 = 96;
+const SAFE_TOP: u32 = 250;
+
+fn decode_frame_number(bgra: &[u8]) -> u32 {
+    (0..16).fold(0, |n, i| {
+        let (x, y) = (SAFE_LEFT + i * CELL + CELL / 2, SAFE_TOP + CELL / 2);
+        let red = bgra[((y * WIDTH + x) * 4 + 2) as usize];
+        n | (u32::from(red > 128) << i)
+    })
+}
+
+fn smoke(out: &Path, frames: u32, encoder: Option<&str>) -> Result<Value, String> {
+    std::fs::create_dir_all(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+    let png_path = out.join("frame0.png");
+    let mp4_path = out.join("smoke.mp4");
+    let encoder = encoder.unwrap_or(karkataka_encode::default_h264_encoder());
+    let mut video = karkataka_encode::Encoder::spawn(&mp4_path, WIDTH, HEIGHT, FPS, encoder)?;
+
+    let mut seen = HashSet::new();
+    let started = std::time::Instant::now();
+    karkataka_engine::render(SMOKE_PAGE, WIDTH, HEIGHT, frames, |n, bgra| {
+        let decoded = decode_frame_number(bgra);
+        if decoded != n {
+            return Err(format!("frame {n}: captured pixels show frame {decoded} (out of order)"));
+        }
+        let mut hasher = DefaultHasher::new();
+        bgra.hash(&mut hasher);
+        if !seen.insert(hasher.finish()) {
+            return Err(format!("frame {n}: identical to an earlier frame"));
+        }
+        if n == 0 {
+            write_png(&png_path, bgra)?;
+        }
+        video.write_frame(bgra)
+    })?;
+    let render_secs = started.elapsed().as_secs_f64();
+    video.finish()?;
+
+    Ok(json!({
+        "frames": frames,
+        "checked": "every frame unique and in order",
+        "png": png_path,
+        "mp4": mp4_path,
+        "encoder": encoder,
+        "render_fps": (frames as f64 / render_secs * 10.0).round() / 10.0,
+    }))
+}
+
+fn write_png(path: &Path, bgra: &[u8]) -> Result<(), String> {
+    let rgba: Vec<u8> = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+    let file = std::fs::File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    let mut png = png::Encoder::new(std::io::BufWriter::new(file), WIDTH, HEIGHT);
+    png.set_color(png::ColorType::Rgba);
+    png.write_header()
+        .and_then(|mut w| w.write_image_data(&rgba))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 #[test]
 fn cli_definition_is_valid() {
     use clap::CommandFactory;
     Cli::command().debug_assert();
+}
+
+#[test]
+fn decodes_frame_number_cells() {
+    let mut bgra = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
+    for i in [0, 2, 8] {
+        let (x, y) = (SAFE_LEFT + i * CELL + CELL / 2, SAFE_TOP + CELL / 2);
+        bgra[((y * WIDTH + x) * 4 + 2) as usize] = 255;
+    }
+    assert_eq!(decode_frame_number(&bgra), 0b1_0000_0101);
 }

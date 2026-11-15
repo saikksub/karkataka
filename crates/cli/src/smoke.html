@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; font-family: Helvetica, Arial, sans-serif; }
+  #bg { position: absolute; inset: 0; }
+  /* Instagram Reels safe zone for 1080x1920: all content lives inside this wrapper. */
+  .safe-area { position: absolute; top: 250px; right: 200px; bottom: 440px; left: 96px; }
+  #cells { display: flex; }
+  #cells div { width: 40px; height: 40px; }
+  #number { margin-top: 160px; font-size: 260px; font-weight: 700; color: #fff; }
+  #bar { position: absolute; left: 0; bottom: 0; height: 24px; background: #fff; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div class="safe-area">
+  <div id="cells"></div>
+  <div id="number"></div>
+  <div id="bar"></div>
+</div>
+<script>
+  const cells = document.getElementById("cells");
+  for (let i = 0; i < 16; i++) cells.appendChild(document.createElement("div"));
+  window.__setFrame = (n) => {
+    document.getElementById("bg").style.background = `hsl(${n * 1.2}, 60%, 35%)`;
+    [...cells.children].forEach((c, i) => (c.style.background = (n >> i) & 1 ? "#fff" : "#000"));
+    document.getElementById("number").textContent = n;
+    document.getElementById("bar").style.width = `${((n + 1) / 300) * 100}%`;
+    console.log("karka:ready:" + n);
+  };
+</script>
+</body>
+</html>

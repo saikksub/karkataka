@@ -112,19 +112,65 @@ examples/
 
 - Rust (stable)
 - Node.js and pnpm (for the Studio and runtime)
-- CEF binaries (version pinned in `cef.lock`)
-- FFmpeg (for the fallback encoder and muxing)
+- CEF binaries (version pinned in `cef.lock`, downloaded by `scripts/fetch-cef.sh`)
+- FFmpeg, installed separately (see below)
 - Optional: NVIDIA, Intel or AMD GPU with hardware encoding support
 
-## Development
+## Setup
+
+### 1. Install FFmpeg separately
+
+Karkataka does not ship FFmpeg. Every frame is piped into the `ffmpeg` command, so it must be installed and on your `PATH`.
+
+```bash
+brew install ffmpeg        # macOS
+sudo apt install ffmpeg    # Debian / Ubuntu
+```
+
+Check that your build has the hardware encoder you need:
+
+```bash
+ffmpeg -hide_banner -encoders | grep -E "h264_(nvenc|videotoolbox)"
+```
+
+- `h264_nvenc` needs an NVIDIA GPU and an FFmpeg built with NVENC. It is the default on Linux and Windows.
+- `h264_videotoolbox` is the default on macOS, which has no NVENC.
+- Pass `--encoder <name>` to use any other FFmpeg encoder, e.g. `--encoder libx264` for CPU encoding.
+
+### 2. Get the code and CEF
 
 ```bash
 git clone https://github.com/xploray/karkataka
 cd karkataka
-pnpm install          # install JS dependencies
+./scripts/fetch-cef.sh     # downloads the CEF build pinned in cef.lock into .cef/ (about 135 MB)
+pnpm install               # JS dependencies
+```
 
+`.cargo/config.toml` points the `cef` crate at `.cef/`, so no environment variables are needed.
+
+### 3. Build and run the engine smoke test
+
+The smoke test renders a built-in 1080x1920 page offscreen for 300 frames. It saves frame 0 as `out/frame0.png`, checks that every frame is unique and in order, and encodes `out/smoke.mp4`.
+
+**macOS.** CEF must run from an `.app` bundle, so build the bundle first:
+
+```bash
+cargo run -p karka --bin bundle-karka
+target/bundle/karka.app/Contents/MacOS/karka smoke --out out
+```
+
+**Linux.**
+
+```bash
+cargo run -p karka -- smoke --out out
+```
+
+Add `--json` for machine-readable output.
+
+### Day-to-day commands
+
+```bash
 cargo build           # build all Rust crates
-cargo run -p karka    # run the CLI
 cargo test            # run Rust tests
 pnpm typecheck        # typecheck all TypeScript packages
 ```
@@ -133,7 +179,7 @@ The repo is two workspaces side by side: a Cargo workspace (`crates/*`) and a pn
 
 ## Roadmap
 
-- [ ] Engine: load a page in CEF, step 300 frames, encode with NVENC
+- [x] Engine: load a page in CEF, step 300 frames, encode with NVENC (`karka smoke`; verified on macOS with VideoToolbox, NVENC not yet run on NVIDIA hardware)
 - [ ] Runtime: `useFrame`, `interpolate`, `Sequence`, `delayRender`
 - [ ] FFmpeg fallback and audio muxing
 - [ ] Studio: scrubber, props panel, render button

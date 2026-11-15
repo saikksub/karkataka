@@ -1,0 +1,3 @@
+# The cef crate finds the CEF binaries here (installed by scripts/fetch-cef.sh).
+[env]
+CEF_PATH = { value = ".cef", relative = true }
