@@ -1,0 +1,34 @@
+<!-- SVG: per-frame path data, stroke drawing, turbulence filter, and SMIL animations seeked to the frame time. -->
+<style> body { background: #101820; } </style>
+<svg id="svg" width="784" height="1170" viewBox="0 0 784 1170">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#ff006e"/><stop offset="1" stop-color="#3a86ff"/></linearGradient>
+    <filter id="noise"><feTurbulence id="turb" type="fractalNoise" baseFrequency="0.01" numOctaves="3" seed="1"/>
+      <feDisplacementMap in="SourceGraphic" scale="40"/></filter>
+  </defs>
+  <circle cx="392" cy="150" r="60" fill="#06d6a0">
+    <animate attributeName="r" values="30;100;30" dur="2s" repeatCount="indefinite"/>
+    <animate attributeName="fill" values="#06d6a0;#ffbe0b;#06d6a0" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <rect x="40" y="100" width="100" height="100" fill="#8338ec">
+    <animateTransform attributeName="transform" type="rotate" from="0 90 150" to="360 90 150" dur="4s" repeatCount="indefinite"/>
+  </rect>
+  <path id="wave" fill="none" stroke="url(#g)" stroke-width="8" stroke-linecap="round"/>
+  <path id="draw" d="M100 500 C 200 300, 600 300, 684 500 S 400 800, 100 700" fill="none" stroke="#fff"
+        stroke-width="6" pathLength="1000" stroke-dasharray="1000"/>
+  <g filter="url(#noise)"><rect x="242" y="800" width="300" height="300" rx="40" fill="#ffbe0b"/></g>
+  <text id="label" x="392" y="1150" text-anchor="middle" font-family="sans-serif" font-size="40" fill="#fff"></text>
+</svg>
+<script>
+const svg = document.getElementById("svg");
+svg.pauseAnimations();
+window.scene = (n) => {
+  const t = n / 30;
+  const pts = Array.from({ length: 80 }, (_, i) => `${i * 10},${300 + 60 * Math.sin(i / 6 + t * 3) * Math.cos(t + i / 20)}`);
+  document.getElementById("wave").setAttribute("d", "M" + pts.join(" L"));
+  document.getElementById("draw").style.strokeDashoffset = 1000 - (n * 10) % 1000;
+  document.getElementById("turb").setAttribute("baseFrequency", 0.005 + (n % 60) * 0.0005);
+  document.getElementById("label").textContent = `svg t=${t.toFixed(2)}s`;
+  svg.setCurrentTime(t);
+};
+</script>

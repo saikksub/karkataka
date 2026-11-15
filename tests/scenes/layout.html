@@ -1,0 +1,32 @@
+<!-- Layout: grid and flex reflow every frame, a scrolling container with sticky headers. -->
+<style>
+body { background: #eef; }
+#grid { display: grid; gap: 8px; height: 380px; padding: 8px; }
+#grid div { background: #3a86ff; border-radius: 8px; color: #fff; font: bold 28px sans-serif;
+            display: flex; align-items: center; justify-content: center; }
+#flex { display: flex; gap: 8px; padding: 8px; height: 80px; }
+#flex div { background: #ff006e; border-radius: 8px; }
+#scroller { position: absolute; top: 500px; left: 0; width: 784px; height: 660px; overflow: auto; background: #fff; }
+#scroller h3 { position: sticky; top: 0; margin: 0; padding: 12px; background: #ffbe0b; font: bold 30px sans-serif; }
+#scroller p { margin: 0; padding: 12px 16px; font: 26px/1.4 sans-serif; border-bottom: 1px solid #ddd; }
+</style>
+<div id="grid"></div>
+<div id="flex"></div>
+<div id="scroller"></div>
+<script>
+const grid = document.getElementById("grid");
+for (let i = 0; i < 9; i++) grid.appendChild(document.createElement("div")).textContent = i + 1;
+const flex = document.getElementById("flex");
+const items = Array.from({ length: 5 }, () => flex.appendChild(document.createElement("div")));
+const scroller = document.getElementById("scroller");
+scroller.innerHTML = Array.from({ length: 12 }, (_, s) =>
+  `<section><h3>Section ${s + 1}</h3>${Array.from({ length: 8 }, (_, p) => `<p>Row ${s + 1}.${p + 1}: layout and scrolling are part of the frame.</p>`).join("")}</section>`
+).join("");
+window.scene = (n) => {
+  const t = n / 30;
+  grid.style.gridTemplateColumns = `${1 + Math.sin(t)}fr ${1 + Math.cos(t)}fr 1fr`;
+  grid.style.gridTemplateRows = `1fr ${1 + Math.sin(t * 2)}fr 1fr`;
+  items.forEach((it, i) => { it.style.flexGrow = 1 + Math.abs(Math.sin(t + i)) * 4; });
+  scroller.scrollTop = (n * 14) % (scroller.scrollHeight - scroller.clientHeight);
+};
+</script>

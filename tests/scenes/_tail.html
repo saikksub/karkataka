@@ -1,0 +1,19 @@
+</div></div>
+<script>
+// Scene harness, part 2: run the scene's frame (it may return a promise), then draw the cells.
+(() => {
+  const host = document.getElementById("cells");
+  const cells = Array.from({ length: 16 }, () => host.appendChild(document.createElement("div")));
+  window.__setFrame = async (n) => {
+    try {
+      if (!window.__karkaFailure && window.scene) await window.scene(n);
+    } catch (e) {
+      fail(e && e.message || e);
+    }
+    cells.forEach((c, i) => {
+      c.style.background = window.__karkaFailure ? "#f00" : (n >> i) & 1 ? "#fff" : "#000";
+    });
+  };
+})();
+</script>
+</body></html>

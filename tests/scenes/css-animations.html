@@ -1,0 +1,35 @@
+<!-- CSS @keyframes and the Web Animations API, paused and seeked to the frame time every frame. -->
+<style>
+body { background: #1d1d2c; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-300px); } }
+@keyframes pulse { 0%, 100% { background: #ff006e; border-radius: 0; } 50% { background: #3a86ff; border-radius: 50%; } }
+.spinner { position: absolute; left: 292px; top: 40px; width: 200px; height: 200px; border-radius: 50%;
+           border: 20px solid #fff3; border-top-color: #ffbe0b; box-sizing: border-box; animation: spin 2s linear infinite; }
+.balls { position: absolute; left: 0; top: 640px; width: 784px; display: flex; justify-content: space-around; }
+.ball { width: 70px; height: 70px; border-radius: 50%; background: #06d6a0; animation: bounce 1s cubic-bezier(.5, 0, .5, 1) infinite; }
+.pulse { position: absolute; top: 760px; width: 160px; height: 160px; animation: pulse 3s ease-in-out infinite; }
+#slider { position: absolute; left: 0; top: 1000px; width: 120px; height: 120px; background: #fb5607; border-radius: 24px; }
+</style>
+<div class="spinner"></div>
+<div class="balls" id="balls"></div>
+<div class="pulse" style="left: 80px"></div>
+<div class="pulse" style="left: 312px; animation-delay: -1s"></div>
+<div class="pulse" style="left: 544px; animation-delay: -2s"></div>
+<div id="slider"></div>
+<script>
+for (let i = 0; i < 8; i++) {
+  const b = document.getElementById("balls").appendChild(document.createElement("div"));
+  b.className = "ball";
+  b.style.animationDelay = `${-i * 0.12}s`;
+}
+document.getElementById("slider").animate(
+  [{ transform: "translateX(0) rotate(0)" }, { transform: "translateX(664px) rotate(180deg)" }],
+  { duration: 1500, iterations: Infinity, direction: "alternate", easing: "ease-in-out" });
+window.scene = (n) => {
+  for (const a of document.getAnimations()) {
+    a.pause();
+    a.currentTime = n * 1000 / 30;
+  }
+};
+</script>

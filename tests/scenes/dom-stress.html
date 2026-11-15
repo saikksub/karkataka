@@ -1,0 +1,31 @@
+<!-- Many elements: 2500 positioned divs restyled every frame, plus 40 cards with box shadows. -->
+<style>
+body { background: #000; }
+.dot { position: absolute; left: 0; top: 0; width: 10px; height: 10px; border-radius: 50%; }
+.card { position: absolute; left: 0; top: 0; width: 120px; height: 80px; border-radius: 12px; background: #fff;
+        box-shadow: 0 12px 24px rgba(0, 0, 0, .5), 0 0 0 2px #ffbe0b inset; }
+</style>
+<script>
+const stage = document.getElementById("stage");
+const dots = Array.from({ length: 2500 }, () => {
+  const d = stage.appendChild(document.createElement("div"));
+  d.className = "dot";
+  return d;
+});
+const cards = Array.from({ length: 40 }, () => {
+  const c = stage.appendChild(document.createElement("div"));
+  c.className = "card";
+  return c;
+});
+window.scene = (n) => {
+  const t = n / 30;
+  dots.forEach((d, i) => {
+    const a = i * 0.0251 + t * (1 + (i % 5) * 0.2), r = 40 + (i % 350);
+    d.style.transform = `translate(${387 + Math.cos(a) * r}px, ${580 + Math.sin(a) * r * 1.4}px)`;
+    d.style.background = `hsl(${(i + n * 4) % 360}, 90%, 60%)`;
+  });
+  cards.forEach((c, i) => {
+    c.style.transform = `translate(${(i % 6) * 130 + 10}px, ${Math.floor(i / 6) * 160 + 40 + 30 * Math.sin(t * 2 + i)}px) rotate(${Math.sin(t + i) * 15}deg)`;
+  });
+};
+</script>

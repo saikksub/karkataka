@@ -1,0 +1,40 @@
+<!-- Text: gradient-clipped text, letter-spacing and weight animation, typewriter, shadows, scripts from many languages, emoji. -->
+<style>
+body { background: #fdf6e3; }
+#stage { color: #222; font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif; }
+#title { font-size: 110px; font-weight: 900; text-align: center; margin-top: 20px;
+         background: linear-gradient(90deg, #ff006e, #3a86ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+#weights { font-size: 56px; text-align: center; margin: 20px 0; }
+#weights span { display: inline-block; }
+#type { font: 32px/1.45 Georgia, serif; padding: 0 24px; height: 420px; overflow: hidden; }
+#intl { font-size: 40px; line-height: 1.6; white-space: nowrap; }
+#shadow { font: italic bold 72px serif; text-align: center; color: #fff; }
+</style>
+<div id="title">Karkataka</div>
+<div id="weights"></div>
+<div id="type"></div>
+<div id="intl">日本語のテキスト · العربية · हिन्दी · 한국어 · Ελληνικά · ไทย · 😀🎬🚀🌍</div>
+<div id="shadow">Shadows</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const spans = [..."Variable"].map((ch) => {
+  const s = $("weights").appendChild(document.createElement("span"));
+  s.textContent = ch;
+  return s;
+});
+const prose = "Every frame is a pure function of frame and props. The same input always gives the same picture, " +
+  "so frames can render in any order, split across workers, and be checked one by one. ".repeat(3);
+window.scene = (n) => {
+  const t = n / 30;
+  $("title").style.letterSpacing = `${Math.sin(t) * 12}px`;
+  $("title").style.transform = `scale(${1 + .08 * Math.sin(t * 2)})`;
+  spans.forEach((s, i) => {
+    s.style.fontWeight = 100 + 100 * Math.floor(((n + i * 4) % 36) / 4.5);
+    s.style.transform = `translateY(${Math.sin(t * 3 + i) * 12}px)`;
+  });
+  $("type").textContent = prose.slice(0, n * 3);
+  $("intl").style.transform = `translateX(${-((n * 6) % 900) + 100}px)`;
+  $("shadow").style.textShadow =
+    `${Math.cos(t) * 12}px ${Math.sin(t) * 12}px 0 #ff006e, ${-Math.cos(t) * 12}px ${-Math.sin(t) * 12}px 8px #3a86ff`;
+};
+</script>

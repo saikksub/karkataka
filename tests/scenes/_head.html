@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Scene harness, part 1. tests/scenes/run.sh builds each test page as _head.html + <scene>.html + _tail.html.
+     The harness draws the 16 frame-number cells `karka smoke` checks; the scene draws into #stage
+     (the Reels safe area below the cells) and may paint the full-frame background on body. -->
+<html><head><meta charset="utf-8">
+<style>
+html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #111; }
+.safe-area { position: absolute; left: 96px; top: 250px; width: 784px; height: 1230px; overflow: hidden; }
+#cells { position: absolute; left: 0; top: 0; display: flex; z-index: 2147483647; isolation: isolate; }
+#cells div { width: 40px; height: 40px; background: #000; }
+#stage { position: absolute; left: 0; top: 60px; width: 784px; height: 1170px; overflow: hidden; }
+</style>
+<script>
+// A scene that cannot run (no WebGL, a thrown error) paints the cells red, so the render fails
+// with "frame-number cells are missing" instead of passing with a blank picture.
+window.__karkaFailure = null;
+window.fail = (why) => {
+  if (window.__karkaFailure) return;
+  window.__karkaFailure = String(why);
+  console.error("karka scene failed: " + window.__karkaFailure);
+};
+addEventListener("error", (e) => fail(e.message));
+addEventListener("unhandledrejection", (e) => fail(e.reason && e.reason.message || e.reason));
+</script>
+</head>
+<body><div class="safe-area"><div id="cells"></div><div id="stage">

@@ -284,6 +284,40 @@ Parallel workers (`--mode multi`, one browser process each) produce correct vide
 
 **Modes.** `--mode auto` (the default) probes the machine before the render starts and picks the worker count: one worker per 4 performance cores (logical cores on Linux), per 600 MB of free memory and per 60 frames, whichever is smallest, at least 1. On the M1 that gives 1. `--mode single` forces one browser; `--mode multi` forces at least 2 (`--workers N` sets the count). The JSON result's `workers_why` says how the count was chosen.
 
+### Scene tests
+
+`tests/scenes/` holds one scene per kind of web content a video might use. `tests/scenes/run.sh` renders each one in 4 modes: GPU and CPU painting, each with one browser and with 2 worker processes. It checks every frame and exits with the number of failed runs.
+
+```bash
+tests/scenes/run.sh                         # all scenes, all modes (~5 min on an M1)
+MODES="gpu software" FRAMES=60 tests/scenes/run.sh webgl svg
+```
+
+| Scene | Covers |
+|---|---|
+| `css-3d` | perspective, `preserve-3d`, `backface-visibility` |
+| `filters` | `blur`, `drop-shadow`, `hue-rotate`, `backdrop-filter`, `mix-blend-mode` |
+| `gradients-masks` | conic and radial gradients, `clip-path`, `mask-image`, border-radius morphing |
+| `svg` | per-frame path data, stroke drawing, `feTurbulence`, SMIL seeked with `setCurrentTime` |
+| `canvas2d` | 3000 particles, additive blending, shadows, text |
+| `webgl` | fragment shader with a time uniform |
+| `text` | gradient text, variable weight, typewriter, non-Latin scripts, emoji |
+| `images` | SVG and PNG data URIs, `object-fit`, tiling, a new image every frame awaited with `decode()` |
+| `async` | `__setFrame` awaiting timers, a Blob `fetch`, `requestAnimationFrame` and `document.fonts.ready` |
+| `css-animations` | `@keyframes` and `element.animate()`, paused and seeked to the frame time |
+| `dom-stress` | 2500 elements restyled every frame, box shadows |
+| `layout` | grid and flex reflow, a scrolling container with sticky headers |
+
+Each page is `_head.html` + the scene + `_tail.html`. The harness draws the frame-number cells, and the scene draws inside the safe area. If a scene cannot run (no WebGL, a JavaScript error), it calls `fail()`, the cells turn red and the render fails, so a blank picture never passes. Output, including `smoke.mp4` for viewing, is in `out/scenes/<scene>/<mode>/`.
+
+To drive CSS animations deterministically, pause and seek them every frame:
+
+```js
+window.__setFrame = (n) => {
+  for (const a of document.getAnimations()) { a.pause(); a.currentTime = n * 1000 / 30; }
+};
+```
+
 ### Day-to-day commands
 
 ```bash

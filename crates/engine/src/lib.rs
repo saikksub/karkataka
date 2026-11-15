@@ -507,9 +507,8 @@ wrap_app! {
                 command_line.append_switch(Some(&switch.into()));
             }
             if !self.gpu {
-                for switch in ["disable-gpu", "disable-gpu-compositing"] {
-                    command_line.append_switch(Some(&switch.into()));
-                }
+                // Not `disable-gpu`: that also turns WebGL off, and painting is just as fast without it.
+                command_line.append_switch(Some(&"disable-gpu-compositing".into()));
             }
         }
     }

@@ -1,0 +1,42 @@
+<!-- Filters and compositing: blur, drop-shadow, hue-rotate, grayscale, backdrop-filter, mix-blend-mode. -->
+<style>
+body { background: #0d0d14; }
+.stripes { position: absolute; inset: 0;
+           background: repeating-linear-gradient(45deg, #e63946 0 40px, #f1faee 40px 80px, #457b9d 80px 120px); }
+.blob { position: absolute; left: 0; top: 0; width: 260px; height: 260px; border-radius: 50%; mix-blend-mode: screen; }
+.glass { position: absolute; left: 92px; width: 600px; height: 300px; border-radius: 32px;
+         backdrop-filter: blur(18px) saturate(1.8); background: rgba(255, 255, 255, .15);
+         border: 2px solid rgba(255, 255, 255, .4); }
+.icon { position: absolute; top: 20px; width: 160px; height: 160px; border-radius: 24px;
+        background: linear-gradient(135deg, #ffbe0b, #fb5607); }
+</style>
+<div class="stripes" id="stripes"></div>
+<div class="blob" id="b0" style="background:#f00"></div>
+<div class="blob" id="b1" style="background:#0f0"></div>
+<div class="blob" id="b2" style="background:#00f"></div>
+<div class="glass" id="glass"></div>
+<div class="icon" id="i0"></div><div class="icon" id="i1"></div><div class="icon" id="i2"></div><div class="icon" id="i3"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+window.scene = (n) => {
+  const t = n / 30;
+  $("stripes").style.filter = `hue-rotate(${n * 4}deg)`;
+  ["b0", "b1", "b2"].forEach((id, i) => {
+    const a = t * 2 + i * 2.094;
+    $(id).style.transform = `translate(${262 + Math.cos(a) * 180}px, ${600 + Math.sin(a) * 180}px)`;
+  });
+  $("glass").style.top = `${220 + (n * 7) % 640}px`;
+  const filters = [
+    `blur(${(n % 20) / 2}px)`,
+    `drop-shadow(0 ${10 + (n % 20)}px 12px rgba(0,0,0,.8))`,
+    `grayscale(${(n % 60) / 60})`,
+    `contrast(${1 + .5 * Math.sin(t)}) brightness(${1 + .5 * Math.sin(t * 2)})`,
+  ];
+  filters.forEach((f, i) => {
+    const el = $("i" + i);
+    el.style.left = `${40 + i * 185}px`;
+    el.style.filter = f;
+    el.style.transform = `rotate(${n * 3}deg)`;
+  });
+};
+</script>
