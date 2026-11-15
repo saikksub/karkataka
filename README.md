@@ -135,7 +135,7 @@ Karkataka is published as four crates:
 2. Download the pinned CEF build. The `cef` crate's own CEF download is broken right now, so use the script instead:
 
    ```bash
-   curl -fsSLO https://raw.githubusercontent.com/xploray/karkataka/main/scripts/fetch-cef.sh
+   curl -fsSLO https://raw.githubusercontent.com/saikksub/karkataka/main/scripts/fetch-cef.sh
    CEF_VERSION=156.0.26+g8ea0c73+chromium-156.0.8078.88 bash fetch-cef.sh ~/.local/share/cef
    ```
 
@@ -234,7 +234,7 @@ ffmpeg -hide_banner -encoders | grep -E "h264_(nvenc|videotoolbox)"
 ### 2. Get the code and CEF
 
 ```bash
-git clone https://github.com/xploray/karkataka
+git clone https://github.com/saikksub/karkataka
 cd karkataka
 ./scripts/fetch-cef.sh     # downloads the CEF build pinned in cef.lock into .cef/ (about 135 MB)
 pnpm install               # JS dependencies
