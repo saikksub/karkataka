@@ -98,9 +98,16 @@ karka still quiz-12 --frame 90     # export one frame as PNG
 ```
 crates/
   engine/      CEF control, frame stepping, capture
+    lib.rs       Public API: Job, render, run_subprocess
+    browser.rs   One offscreen browser, stepped frame by frame
+    page.rs      Data URL and the hidden frame-marker row
+    worker.rs    Parallel rendering with worker processes
+    probe.rs     Machine probe that picks the worker count
   encode/      Hardware encoders and FFmpeg fallback
-  media/       Video decoding and audio mixing
-  cli/         The `karka` command
+  media/       Video decoding and audio mixing (empty for now)
+  cli/         The `karka` command (main.rs: arguments; smoke.rs: the smoke test)
+bench/         Timing against Remotion
+tests/scenes/  Animation scenes rendered in every mode
 packages/
   runtime/     useFrame, interpolate, spring, Sequence, delayRender
   studio/      Web UI for preview, review and render queue
