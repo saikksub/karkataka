@@ -3,6 +3,9 @@ name = "karka"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "karka: render video scenes written as web pages, on the GPU, from the command line."
+readme = "../../README.md"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

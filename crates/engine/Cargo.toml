@@ -3,6 +3,9 @@ name = "karkataka-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Offscreen CEF (Chromium) renderer that steps a web page frame by frame and returns raw pixels."
+readme = "../../README.md"
 
 [dependencies]
 cef = "=156.4.0"

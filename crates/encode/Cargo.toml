@@ -3,5 +3,8 @@ name = "karkataka-encode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Pipes raw BGRA video frames into ffmpeg hardware encoders."
+readme = "../../README.md"
 
 [dependencies]

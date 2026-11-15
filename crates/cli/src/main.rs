@@ -49,6 +49,10 @@ enum Command {
         /// ffmpeg video encoder [default: h264_nvenc, h264_videotoolbox on macOS]
         #[arg(long)]
         encoder: Option<String>,
+        /// HTML page to render instead of the built-in one. It must define `__setFrame(n)`
+        /// and draw the same frame-number cells (see crates/cli/src/smoke.html)
+        #[arg(long)]
+        page: Option<PathBuf>,
     },
 }
 
@@ -77,7 +81,7 @@ fn main() -> ExitCode {
         Command::Studio => Err("`karka studio` is not implemented yet".to_string()),
         Command::Render { .. } => Err("`karka render` is not implemented yet".to_string()),
         Command::Still { .. } => Err("`karka still` is not implemented yet".to_string()),
-        Command::Smoke { out, frames, encoder } => smoke(&out, frames, encoder.as_deref()),
+        Command::Smoke { out, frames, encoder, page } => smoke(&out, frames, encoder.as_deref(), page.as_deref()),
     };
     match result {
         Ok(value) => {
@@ -105,15 +109,25 @@ const CELL: u32 = 40;
 const SAFE_LEFT: u32 = 96;
 const SAFE_TOP: u32 = 250;
 
-fn decode_frame_number(bgra: &[u8]) -> u32 {
-    (0..16).fold(0, |n, i| {
+/// Read the 16 cells; `None` unless every cell is opaque black or opaque white.
+fn decode_frame_number(bgra: &[u8]) -> Option<u32> {
+    (0..16).try_fold(0, |n, i| {
         let (x, y) = (SAFE_LEFT + i * CELL + CELL / 2, SAFE_TOP + CELL / 2);
-        let red = bgra[((y * WIDTH + x) * 4 + 2) as usize];
-        n | (u32::from(red > 128) << i)
+        let at = ((y * WIDTH + x) * 4) as usize;
+        let bit = match bgra[at..at + 4] {
+            [b, g, r, 255] if b < 16 && g < 16 && r < 16 => 0,
+            [b, g, r, 255] if b > 239 && g > 239 && r > 239 => 1,
+            _ => return None,
+        };
+        Some(n | (bit << i))
     })
 }
 
-fn smoke(out: &Path, frames: u32, encoder: Option<&str>) -> Result<Value, String> {
+fn smoke(out: &Path, frames: u32, encoder: Option<&str>, page: Option<&Path>) -> Result<Value, String> {
+    let html = match page {
+        Some(path) => std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
+        None => SMOKE_PAGE.to_string(),
+    };
     std::fs::create_dir_all(out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
     let png_path = out.join("frame0.png");
     let mp4_path = out.join("smoke.mp4");
@@ -122,10 +136,11 @@ fn smoke(out: &Path, frames: u32, encoder: Option<&str>) -> Result<Value, String
 
     let mut seen = HashSet::new();
     let started = std::time::Instant::now();
-    karkataka_engine::render(SMOKE_PAGE, WIDTH, HEIGHT, frames, |n, bgra| {
-        let decoded = decode_frame_number(bgra);
-        if decoded != n {
-            return Err(format!("frame {n}: captured pixels show frame {decoded} (out of order)"));
+    karkataka_engine::render(&html, WIDTH, HEIGHT, frames, |n, bgra| {
+        match decode_frame_number(bgra) {
+            Some(decoded) if decoded == n => {}
+            Some(decoded) => return Err(format!("frame {n}: captured pixels show frame {decoded} (out of order)")),
+            None => return Err(format!("frame {n}: frame-number cells are missing or not black/white")),
         }
         let mut hasher = DefaultHasher::new();
         bgra.hash(&mut hasher);
@@ -169,9 +184,13 @@ fn cli_definition_is_valid() {
 #[test]
 fn decodes_frame_number_cells() {
     let mut bgra = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
-    for i in [0, 2, 8] {
+    // Transparent pixels are not cells.
+    assert_eq!(decode_frame_number(&bgra), None);
+    for i in 0..16 {
         let (x, y) = (SAFE_LEFT + i * CELL + CELL / 2, SAFE_TOP + CELL / 2);
-        bgra[((y * WIDTH + x) * 4 + 2) as usize] = 255;
+        let at = ((y * WIDTH + x) * 4) as usize;
+        let v = if [0, 2, 8].contains(&i) { 255 } else { 0 };
+        bgra[at..at + 4].copy_from_slice(&[v, v, v, 255]);
     }
-    assert_eq!(decode_frame_number(&bgra), 0b1_0000_0101);
+    assert_eq!(decode_frame_number(&bgra), Some(0b1_0000_0101));
 }

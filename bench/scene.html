@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Benchmark scene. Same pixels as ~/Test/my-video/src/karka-bench/Bench.tsx (the Remotion copy). -->
+<style>
+  html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; font-family: Helvetica, Arial, sans-serif; }
+  #bg { position: absolute; inset: 0; }
+  /* Instagram Reels safe zone for 1080x1920: all content lives inside this wrapper. */
+  .safe-area { position: absolute; top: 250px; left: 96px; width: 784px; height: 1230px; overflow: hidden; }
+  #cells { display: flex; }
+  #cells div { width: 40px; height: 40px; }
+  #number { position: absolute; top: 60px; left: 0; font-size: 200px; font-weight: 700; color: #fff; line-height: 1; }
+  .card { position: absolute; left: 0; top: 0; width: 200px; height: 80px; border-radius: 16px;
+          box-shadow: 0 10px 30px rgba(0,0,0,.35); color: #fff; font-size: 32px; font-weight: 700;
+          display: flex; align-items: center; justify-content: center; }
+  #bar { position: absolute; left: 0; bottom: 0; height: 24px; background: #fff; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div class="safe-area">
+  <div id="cells"></div>
+  <div id="number"></div>
+  <div id="cards"></div>
+  <div id="bar"></div>
+</div>
+<script>
+  const CARDS = 24, FRAMES = 300;
+  const cells = document.getElementById("cells");
+  for (let i = 0; i < 16; i++) cells.appendChild(document.createElement("div"));
+  const cards = [];
+  for (let i = 0; i < CARDS; i++) {
+    const c = document.createElement("div");
+    c.className = "card";
+    c.textContent = "Card " + i;
+    document.getElementById("cards").appendChild(c);
+    cards.push(c);
+  }
+  window.__setFrame = (f) => {
+    document.getElementById("bg").style.background =
+      `linear-gradient(${f}deg, hsl(${f % 360}, 60%, 25%), hsl(${(f + 120) % 360}, 60%, 15%))`;
+    [...cells.children].forEach((c, i) => (c.style.background = (f >> i) & 1 ? "#fff" : "#000"));
+    document.getElementById("number").textContent = f;
+    cards.forEach((c, i) => {
+      const x = 292 * (1 + Math.sin(f * 0.05 + i * 0.7));
+      const y = 300 + ((i * 37 + f * 4) % 800);
+      const r = Math.sin(f * 0.03 + i) * 15;
+      c.style.transform = `translate(${x}px, ${y}px) rotate(${r}deg)`;
+      c.style.background = `hsl(${(i * 15 + f) % 360}, 70%, 50%)`;
+    });
+    document.getElementById("bar").style.width = `${((f + 1) / FRAMES) * 100}%`;
+  };
+</script>
+</body>
+</html>

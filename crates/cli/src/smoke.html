@@ -28,7 +28,6 @@
     [...cells.children].forEach((c, i) => (c.style.background = (n >> i) & 1 ? "#fff" : "#000"));
     document.getElementById("number").textContent = n;
     document.getElementById("bar").style.width = `${((n + 1) / 300) * 100}%`;
-    console.log("karka:ready:" + n);
   };
 </script>
 </body>
