@@ -68,6 +68,13 @@ Rules for scenes:
 
 ## CLI
 
+The CLI is the main interface. Everything Karkataka can do is a `karka` command, so scripts, CI and AI agents can drive it without the Studio. The Studio is a UI on top of the same commands.
+
+- Every command runs without prompts.
+- `--help` on any command lists its options.
+- `--json` prints results and errors as JSON on stdout.
+- The exit code is 0 on success and non-zero on failure.
+
 ```bash
 karka studio                       # open the Studio
 karka render quiz-12               # render with defaults
