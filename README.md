@@ -1,182 +1,177 @@
 # Karkataka
 
-Write video scenes as web pages. Render them on the GPU.
+Write video scenes as web pages. Render them to MP4 with a Rust engine that drives Chromium offscreen and encodes on the GPU.
 
-Karkataka is a programmatic video renderer built by [Xploray](https://xploray.com). You build each scene with TypeScript, HTML and CSS, preview and review it in a browser, and render it to MP4 through a Rust engine that drives Chromium (CEF) offscreen and encodes on the GPU.
+> **Status: early development.** The engine works: it renders any web page frame by frame and encodes it to MP4, about 2x faster than Remotion on our benchmark. `karka render`, `karka still`, the Studio and the TypeScript runtime are not built yet. See [Roadmap](#roadmap).
 
-> Status: early development. APIs will change between releases.
+## Contents
 
-## Why
+1. [Setup](#setup)
+2. [Build and test](#build-and-test)
+3. [Benchmark against Remotion](#benchmark-against-remotion)
+4. [Using karka](#using-karka)
+5. [How it works](#how-it-works)
+6. [Use the engine as a library](#use-the-engine-as-a-library)
+7. [Project layout](#project-layout)
+8. [Roadmap](#roadmap)
 
-Remotion takes a screenshot of a headless browser for every frame, saves it as an image, and hands it to FFmpeg. That screenshot step is the bottleneck.
+## Setup
 
-Karkataka skips it:
+Do this once. You need Rust (stable), Node.js with pnpm, and FFmpeg.
 
-- Chromium draws each frame on the GPU and hands raw pixels (or a GPU texture) straight to the engine.
-- No screenshots and no PNG encoding per frame.
-- Encoding uses the hardware encoder (NVENC, VAAPI/QSV, VideoToolbox), with an FFmpeg CPU fallback.
+**1. Install FFmpeg.** Karkataka does not ship it. Every frame is piped into the `ffmpeg` command, so it must be on your `PATH`.
+
+```bash
+brew install ffmpeg        # macOS
+sudo apt install ffmpeg    # Debian / Ubuntu
+```
+
+**2. Get the code and CEF** (Chromium, about 135 MB, version pinned in `cef.lock`):
+
+```bash
+git clone https://github.com/saikksub/karkataka
+cd karkataka
+./scripts/fetch-cef.sh
+pnpm install
+```
+
+**3. macOS only: create the app bundle.** On macOS, CEF only runs from inside an `.app`. This creates `target/bundle/karka.app`:
+
+```bash
+cargo run -p karka --bin bundle-karka
+```
+
+**4. Check that it works.** This renders a built-in test page for 300 frames, checks every frame, and writes `out/frame0.png` and `out/smoke.mp4`:
+
+```bash
+target/bundle/karka.app/Contents/MacOS/karka smoke --out out    # macOS
+cargo run --release -p karka -- smoke --out out                  # Linux
+```
+
+## Build and test
+
+Do this after every code change.
+
+**1. Run the unit tests** (a few seconds):
+
+```bash
+cargo test
+```
+
+**2. Build a release binary.** On macOS, also copy it into the app bundle, because the scene tests and benchmarks run the app. Delete each old file before copying; copying over it makes macOS kill the app on launch (exit code 137).
+
+```bash
+cargo build --release -p karka --bins
+
+# macOS only: refresh the app bundle
+B=target/bundle/karka.app/Contents
+rm -f $B/MacOS/karka && cp target/release/karka $B/MacOS/karka
+for h in $B/Frameworks/karka\ Helper*.app; do
+  n=$(basename "$h" .app)
+  rm -f "$h/Contents/MacOS/$n" && cp target/release/karka_helper "$h/Contents/MacOS/$n"
+done
+```
+
+**3. Run the scene tests** (about 5 minutes):
+
+```bash
+tests/scenes/run.sh
+```
+
+This renders 12 animation scenes, each in 4 modes (GPU and CPU painting, each with one browser and with 2 worker processes): 48 renders. It prints one line per render and ends with `N failed`; the exit code is the number of failures. A render fails when:
+
+- any frame does not show its own frame number (a frame is missing, stale or out of order),
+- the scene cannot run (no WebGL, a JavaScript error): its frame-number cells turn red,
+- the engine sends more than 30 redraw requests per frame (healthy is 1–15).
+
+For a quicker run while working:
+
+```bash
+MODES="gpu software" FRAMES=60 tests/scenes/run.sh layout webgl
+```
+
+When a render fails, look in `out/scenes/<scene>/<mode>/`: `stderr.log` has the errors, and `frame0.png` and `smoke.mp4` show the picture.
+
+| Scene | Covers |
+|---|---|
+| `css-3d` | perspective, `preserve-3d`, `backface-visibility` |
+| `filters` | `blur`, `drop-shadow`, `hue-rotate`, `backdrop-filter`, `mix-blend-mode` |
+| `gradients-masks` | conic and radial gradients, `clip-path`, `mask-image`, border-radius morphing |
+| `svg` | per-frame path data, stroke drawing, `feTurbulence`, SMIL animations |
+| `canvas2d` | 3000 particles, additive blending, shadows, text |
+| `webgl` | a fragment shader |
+| `text` | gradient text, variable weight, typewriter, non-Latin scripts, emoji |
+| `images` | SVG and PNG images, `object-fit`, tiling, a new image decoded every frame |
+| `async` | frames that wait on timers, `fetch`, `requestAnimationFrame` and fonts |
+| `css-animations` | `@keyframes` and `element.animate()` |
+| `dom-stress` | 2500 elements restyled every frame |
+| `layout` | grid and flex reflow, scrolling with sticky headers |
+
+To add a scene, add `tests/scenes/<name>.html`. It defines `window.scene = (n) => { ... }`, which draws frame `n` into `#stage` (it may return a promise), and calls `fail("why")` if it cannot run. The harness (`_head.html`, `_tail.html`) adds the frame-number cells.
+
+## Benchmark against Remotion
+
+`bench/scene.html` is a 300-frame, 1080x1920 scene. A Remotion copy draws the same picture in `~/Test/my-video/src/karka-bench/` (set `REMOTION_DIR` if yours is elsewhere). Build and refresh the app first (step 2 above), then:
+
+```bash
+bench/run.sh "karka:--software" "karka:" "remotion:--hardware-acceleration=if-possible"
+```
+
+Each setup runs 3 times. Results on an Apple M1 with 8 GB:
+
+| Renderer | Setup | Time |
+|---|---|---|
+| Karkataka | CPU painting (`--software`) | **4.2–4.3 s** |
+| Karkataka | GPU painting | 6.5 s |
+| Karkataka | CPU painting, 2 processes (`--mode multi`) | 6.1–6.8 s |
+| Remotion 4.0.537 | hardware encoding | 9.6–10.3 s |
+| Remotion 4.0.537 | default (libx264) | 11.5–11.8 s |
+
+## Using karka
+
+Only `karka smoke` works today. It renders a page, checks every frame and encodes an MP4.
+
+```bash
+karka smoke --page my-scene.html --out out --json
+```
+
+| Option | Meaning |
+|---|---|
+| `--page <file>` | Page to render. It must define `window.__setFrame(n)` and draw the frame-number cells (see `crates/cli/src/smoke.html`). Default: a built-in page. |
+| `--frames <n>` | Number of frames (default 300). |
+| `--out <dir>` | Where `frame0.png` and `smoke.mp4` go (default `out`). |
+| `--software` | Paint on the CPU instead of the GPU. Faster for most scenes; GPU is faster for 3D transforms and filters. |
+| `--mode auto\|single\|multi` | `auto` (default) checks CPU cores and free memory and picks the number of browser processes. `single` uses one browser. `multi` uses several, one process each (`--workers N` sets how many). |
+| `--encoder <name>` | FFmpeg encoder. Default: `h264_videotoolbox` on macOS, `h264_nvenc` elsewhere. `libx264` encodes on the CPU. |
+| `--json` | Print the result or error as JSON. The exit code is 0 on success. |
+
+More processes only help on machines with spare cores and memory. On an 8 GB M1, one is fastest, and `auto` picks one.
 
 ## How it works
 
-```
-Studio (web UI)  ──►  Scene page (TypeScript)  ──►  Engine (Rust)
- timeline, props,       draws frame N                CEF offscreen
- review, queue                                        → HW encoder → MP4
-```
+1. The engine loads the page in an offscreen Chromium (CEF) browser, 1080x1920.
+2. For each frame it calls `window.__setFrame(n)` in the page, and waits if that returns a promise.
+3. It asks Chromium to paint, and takes the pixels Chromium hands back (`OnPaint`). No screenshots, no PNG per frame.
+4. Chromium sometimes paints an older frame. So the engine draws the frame number into a hidden extra pixel row, and only accepts a paint whose row shows the frame it asked for.
+5. It pipes the pixels into FFmpeg, which encodes on the hardware encoder.
 
-1. The engine loads the scene page in an offscreen CEF browser.
-2. For each frame, it calls `window.__setFrame(n)` and waits until the page is ready.
-3. It tells Chromium to paint one frame (external begin frame).
-4. It takes the frame from `OnPaint` (CPU buffer) or `OnAcceleratedPaint` (GPU texture).
-5. It sends the frame to the encoder, then muxes the audio at the end.
+A page must draw frame `n` the same way every time. To use CSS animations, pause them and seek them to the frame's time:
 
-Every frame is a pure function of `frame + props`. The same input always gives the same picture, so frames can render in any order and split across workers.
-
-## Writing a scene
-
-```ts
-import { useFrame, interpolate, Sequence } from "@karkataka/runtime";
-
-export default function Quiz({ question, seconds }) {
-  const frame = useFrame();
-  const opacity = interpolate(frame, [0, 15], [0, 1]);
-
-  return (
-    <div style={{ opacity }}>
-      <Sequence from={0} duration={seconds * 30}>
-        <Code source={question} />
-        <Timer seconds={seconds} />
-      </Sequence>
-    </div>
-  );
-}
+```js
+window.__setFrame = (n) => {
+  for (const a of document.getAnimations()) { a.pause(); a.currentTime = n * 1000 / 30; }
+};
 ```
 
-Rules for scenes:
+## Use the engine as a library
 
-- Use `useFrame()` for all timing. CSS animations, `setTimeout` and `requestAnimationFrame` are blocked, because they break repeatable output.
-- Wrap anything that loads (fonts, images, data) in `delayRender()` so the frame is not captured early.
-- Use `<Video>` and `<Audio>` for media. Video frames are decoded in Rust, not by seeking an HTML `<video>` element.
-
-## Studio
-
-- Timeline scrubber, play, loop, and frame stepping
-- Props panel generated from the scene's schema
-- Hot reload on save
-- Review mode: comments pinned to a frame number, then approve and render
-- Render queue with progress per job
-
-## CLI
-
-The CLI is the main interface. Everything Karkataka can do is a `karka` command, so scripts, CI and AI agents can drive it without the Studio. The Studio is a UI on top of the same commands.
-
-- Every command runs without prompts.
-- `--help` on any command lists its options.
-- `--json` prints results and errors as JSON on stdout.
-- The exit code is 0 on success and non-zero on failure.
-
-```bash
-karka studio                       # open the Studio
-karka render quiz-12               # render with defaults
-karka render quiz-12 --codec h265 --crf 20 --fps 60
-karka still quiz-12 --frame 90     # export one frame as PNG
-```
-
-## Render options
-
-| Group | Options |
-|---|---|
-| Output | MP4, WebM, MOV, GIF, PNG sequence, single still |
-| Codec | H.264, H.265, AV1, VP9, ProRes 422 / 4444 |
-| Quality | CRF, bitrate, encoder preset, keyframe interval |
-| Frame | Resolution, scale factor, fps, frame range |
-| Color | Pixel format (yuv420p, yuv444p), alpha channel, color space |
-| Speed | GPU on/off, worker count, chunk size |
-
-## Project layout
-
-```
-crates/
-  engine/      CEF control, frame stepping, capture
-    lib.rs       Public API: Job, render, run_subprocess
-    browser.rs   One offscreen browser, stepped frame by frame
-    page.rs      Data URL and the hidden frame-marker row
-    worker.rs    Parallel rendering with worker processes
-    probe.rs     Machine probe that picks the worker count
-  encode/      Hardware encoders and FFmpeg fallback
-  media/       Video decoding and audio mixing (empty for now)
-  cli/         The `karka` command (main.rs: arguments; smoke.rs: the smoke test)
-bench/         Timing against Remotion
-tests/scenes/  Animation scenes rendered in every mode
-packages/
-  runtime/     useFrame, interpolate, spring, Sequence, delayRender
-  studio/      Web UI for preview, review and render queue
-examples/
-  c-quiz/      Vertical C programming quiz short
-```
-
-## Requirements
-
-- Rust (stable)
-- Node.js and pnpm (for the Studio and runtime)
-- CEF binaries (version pinned in `cef.lock`, downloaded by `scripts/fetch-cef.sh`)
-- FFmpeg, installed separately (see below)
-- Optional: NVIDIA, Intel or AMD GPU with hardware encoding support
-
-## Install from crates.io
-
-> Not published yet. These steps describe how it will work once the crates are on crates.io.
-
-Karkataka is published as four crates:
-
-| Crate | What it is |
-|---|---|
-| `karka` | The command-line tool |
-| `karkataka-engine` | Offscreen CEF renderer: page in, raw frames out |
-| `karkataka-encode` | Pipes raw frames into ffmpeg |
-| `karkataka-media` | Video decoding and audio mixing (not implemented yet) |
-
-### Install the CLI (Linux)
-
-1. Install FFmpeg separately (see [Setup](#setup)).
-2. Download the pinned CEF build. The `cef` crate's own CEF download is broken right now, so use the script instead:
-
-   ```bash
-   curl -fsSLO https://raw.githubusercontent.com/saikksub/karkataka/main/scripts/fetch-cef.sh
-   CEF_VERSION=156.0.26+g8ea0c73+chromium-156.0.8078.88 bash fetch-cef.sh ~/.local/share/cef
-   ```
-
-   `CEF_VERSION` must match `cef.lock` for the karka version you install.
-3. Install karka against that CEF build, and let it find the CEF libraries at run time:
-
-   ```bash
-   export CEF_PATH=~/.local/share/cef
-   export LD_LIBRARY_PATH="$CEF_PATH:$LD_LIBRARY_PATH"
-   cargo install karka
-   karka smoke --out out
-   ```
-
-   Keep both `export` lines in your shell profile. `cargo install` copies only the `karka` binary, so the CEF libraries stay in `CEF_PATH`.
-
-### macOS
-
-`cargo install karka` is not enough on macOS. CEF only runs from an `.app` bundle with helper apps, and `cargo install` cannot build one. Build from source instead (see [Setup](#setup)), then run `target/bundle/karka.app/Contents/MacOS/karka`.
-
-### Use the engine as a library
-
-```toml
-[dependencies]
-karkataka-engine = "0.1"
-karkataka-encode = "0.1"   # only if you want ffmpeg encoding
-```
-
-Build with `CEF_PATH` set, as for the CLI. `render` loads a page, steps every frame and hands you the raw BGRA pixels:
+> Not on crates.io yet. Once published, it will be four crates: `karka` (the CLI), `karkataka-engine` (page in, raw frames out), `karkataka-encode` (frames into FFmpeg) and `karkataka-media` (planned).
 
 ```rust
 use karkataka_encode::{Encoder, default_h264_encoder};
 
 fn main() -> Result<(), String> {
-    // CEF and the render workers relaunch this executable. Handle that first, before anything else.
+    // CEF and the render workers relaunch this executable. Handle that first.
     if let Some(code) = karkataka_engine::run_subprocess() {
         std::process::exit(code);
     }
@@ -185,8 +180,7 @@ fn main() -> Result<(), String> {
 <script>window.__setFrame = (n) => { document.getElementById("n").textContent = n; };</script>"#;
 
     let mut video = Encoder::spawn("out.mp4".as_ref(), 1080, 1920, 30, default_h264_encoder())?;
-    // probe::plan picks the worker count from cores and free memory; workers > 1 renders in
-    // parallel processes (frames still arrive in order). gpu: false paints on the CPU.
+    // Let the engine pick how many browser processes this machine can run.
     let workers = karkataka_engine::probe::plan(&karkataka_engine::probe::probe(), 300).workers;
     let job = karkataka_engine::Job { html, width: 1080, height: 1920, frames: 300, workers, gpu: true };
     karkataka_engine::render(&job, |_frame, bgra| video.write_frame(bgra))?;
@@ -194,173 +188,47 @@ fn main() -> Result<(), String> {
 }
 ```
 
-The page contract:
+Frames arrive in order, as raw BGRA pixels, on a separate thread.
 
-- Define `window.__setFrame(n)`. It must draw frame `n` and nothing else, so the same `n` always gives the same picture.
-- If a frame needs to load something first, return a promise from `__setFrame`. The engine waits for it.
-- Frames arrive in order on a separate thread, so encoding overlaps rendering, even when several browsers render at once.
+**Building it:** set `CEF_PATH` to a CEF folder from `scripts/fetch-cef.sh`. The `cef` crate's own download is broken right now. On Linux, also add that folder to `LD_LIBRARY_PATH`. On macOS your program must run from an `.app` bundle with a helper binary; copy `crates/cli/src/bin/karka_helper.rs`, `bundle-karka.rs` and the `[package.metadata.cef.bundle]` section of `crates/cli/Cargo.toml`.
 
-On macOS a library user also needs the `.app` bundle with a helper binary. Copy `crates/cli/src/bin/karka_helper.rs` and `bundle-karka.rs`, and set `[package.metadata.cef.bundle] helper_name` in your `Cargo.toml`, as in `crates/cli/Cargo.toml`.
+**Publishing (maintainers):** bump `version` in the root `Cargo.toml`, then with `CEF_PATH` set run `cargo publish -p` for `karkataka-encode`, `karkataka-media`, `karkataka-engine` and `karka`, in that order.
 
-### Publishing (maintainers)
+## Project layout
 
-Publish in dependency order, with `CEF_PATH` set so the engine builds:
-
-```bash
-cargo publish -p karkataka-encode
-cargo publish -p karkataka-media
-cargo publish -p karkataka-engine
-cargo publish -p karka
 ```
-
-Before the first release, bump `version` in the root `Cargo.toml` from `0.0.0` to `0.1.0`, and update the `CEF_VERSION` line above whenever `cef.lock` changes.
-
-## Setup
-
-Build from source. This is the only way on macOS for now.
-
-### 1. Install FFmpeg separately
-
-Karkataka does not ship FFmpeg. Every frame is piped into the `ffmpeg` command, so it must be installed and on your `PATH`.
-
-```bash
-brew install ffmpeg        # macOS
-sudo apt install ffmpeg    # Debian / Ubuntu
+crates/
+  engine/        Renders a page frame by frame
+    lib.rs         Public API: Job, render, run_subprocess
+    browser.rs     One offscreen browser and its frame loop
+    page.rs        The page URL and the hidden frame-number row
+    worker.rs      Rendering in several processes
+    probe.rs       Picks the number of processes for this machine
+  encode/        Pipes frames into FFmpeg
+  media/         Video decoding and audio mixing (empty for now)
+  cli/           The karka command (main.rs: options; smoke.rs: the smoke test)
+bench/           Benchmark against Remotion
+tests/scenes/    Animation scenes rendered in every mode
+scripts/         fetch-cef.sh
+next-action-item.md   What we are doing next, and what is blocked
 ```
-
-Check that your build has the hardware encoder you need:
-
-```bash
-ffmpeg -hide_banner -encoders | grep -E "h264_(nvenc|videotoolbox)"
-```
-
-- `h264_nvenc` needs an NVIDIA GPU and an FFmpeg built with NVENC. It is the default on Linux and Windows.
-- `h264_videotoolbox` is the default on macOS, which has no NVENC.
-- Pass `--encoder <name>` to use any other FFmpeg encoder, e.g. `--encoder libx264` for CPU encoding.
-
-### 2. Get the code and CEF
-
-```bash
-git clone https://github.com/saikksub/karkataka
-cd karkataka
-./scripts/fetch-cef.sh     # downloads the CEF build pinned in cef.lock into .cef/ (about 135 MB)
-pnpm install               # JS dependencies
-```
-
-`.cargo/config.toml` points the `cef` crate at `.cef/`, so no environment variables are needed.
-
-### 3. Build and run the engine smoke test
-
-The smoke test renders a built-in 1080x1920 page offscreen for 300 frames. It saves frame 0 as `out/frame0.png`, checks that every frame is unique and in order, and encodes `out/smoke.mp4`.
-
-**macOS.** CEF must run from an `.app` bundle, so build the bundle first:
-
-```bash
-cargo run -p karka --bin bundle-karka
-target/bundle/karka.app/Contents/MacOS/karka smoke --out out
-```
-
-**Linux.**
-
-```bash
-cargo run -p karka -- smoke --out out
-```
-
-Add `--json` for machine-readable output.
-
-### Benchmark against Remotion
-
-`bench/scene.html` is a 300-frame, 1080x1920 scene: a gradient, 24 rotating cards with shadows, a counter and a progress bar. A Remotion copy with the same pixels draws the same picture.
-
-```bash
-bench/run.sh "karka:--software" "karka:" "remotion:--hardware-acceleration=if-possible"
-```
-
-`bench/run.sh` runs each setup 3 times and prints the wall time from command to finished MP4. It expects the Remotion copy of the scene in `REMOTION_DIR` (an entry point `src/karka-bench/index.ts` with a `KarkaBench` composition).
-
-Measured on an Apple M1 (8 GB), release build, 3 runs each:
-
-| Renderer | Setup | Time |
-|---|---|---|
-| Karkataka | 1 browser, software painting (`--software`), VideoToolbox | **4.5–6.2 s** |
-| Karkataka | 1 browser, GPU painting, VideoToolbox | 6.4–6.7 s |
-| Remotion 4.0.537 | 4 tabs (default), hardware encoding | 9.4–10.1 s |
-| Remotion 4.0.537 | 4 tabs (default), libx264 | 11.5–11.8 s |
-
-Parallel workers (`--mode multi`, one browser process each) produce correct video but are slower on this machine: 2 workers took 7.3–8.3 s and 3 took 31–34 s in software mode. One render already keeps the M1 busy (multi-threaded painting, one hardware encoder, ~540 MB per browser on 8 GB of RAM), so more copies only add contention. Machines with more cores and memory may scale; that is not measured yet.
-
-**Modes.** `--mode auto` (the default) probes the machine before the render starts and picks the worker count: one worker per 4 performance cores (logical cores on Linux), per 600 MB of free memory and per 60 frames, whichever is smallest, at least 1. On the M1 that gives 1. `--mode single` forces one browser; `--mode multi` forces at least 2 (`--workers N` sets the count). The JSON result's `workers_why` says how the count was chosen.
-
-### Scene tests
-
-`tests/scenes/` holds one scene per kind of web content a video might use. `tests/scenes/run.sh` renders each one in 4 modes: GPU and CPU painting, each with one browser and with 2 worker processes. It checks every frame and exits with the number of failed runs.
-
-```bash
-tests/scenes/run.sh                         # all scenes, all modes (~5 min on an M1)
-MODES="gpu software" FRAMES=60 tests/scenes/run.sh webgl svg
-```
-
-| Scene | Covers |
-|---|---|
-| `css-3d` | perspective, `preserve-3d`, `backface-visibility` |
-| `filters` | `blur`, `drop-shadow`, `hue-rotate`, `backdrop-filter`, `mix-blend-mode` |
-| `gradients-masks` | conic and radial gradients, `clip-path`, `mask-image`, border-radius morphing |
-| `svg` | per-frame path data, stroke drawing, `feTurbulence`, SMIL seeked with `setCurrentTime` |
-| `canvas2d` | 3000 particles, additive blending, shadows, text |
-| `webgl` | fragment shader with a time uniform |
-| `text` | gradient text, variable weight, typewriter, non-Latin scripts, emoji |
-| `images` | SVG and PNG data URIs, `object-fit`, tiling, a new image every frame awaited with `decode()` |
-| `async` | `__setFrame` awaiting timers, a Blob `fetch`, `requestAnimationFrame` and `document.fonts.ready` |
-| `css-animations` | `@keyframes` and `element.animate()`, paused and seeked to the frame time |
-| `dom-stress` | 2500 elements restyled every frame, box shadows |
-| `layout` | grid and flex reflow, a scrolling container with sticky headers |
-
-Each page is `_head.html` + the scene + `_tail.html`. The harness draws the frame-number cells, and the scene draws inside the safe area. If a scene cannot run (no WebGL, a JavaScript error), it calls `fail()`, the cells turn red and the render fails, so a blank picture never passes. Output, including `smoke.mp4` for viewing, is in `out/scenes/<scene>/<mode>/`.
-
-To drive CSS animations deterministically, pause and seek them every frame:
-
-```js
-window.__setFrame = (n) => {
-  for (const a of document.getAnimations()) { a.pause(); a.currentTime = n * 1000 / 30; }
-};
-```
-
-### Day-to-day commands
-
-```bash
-cargo build           # build all Rust crates
-cargo test            # run Rust tests
-pnpm typecheck        # typecheck all TypeScript packages
-```
-
-The repo is two workspaces side by side: a Cargo workspace (`crates/*`) and a pnpm workspace (`packages/*`, `examples/*`).
 
 ## Roadmap
 
-- [x] Engine: load a page in CEF, step 300 frames, encode with NVENC (`karka smoke`; verified on macOS with VideoToolbox, NVENC not yet run on NVIDIA hardware)
-- [ ] Runtime: `useFrame`, `interpolate`, `Sequence`, `delayRender`
-- [ ] FFmpeg fallback and audio muxing
-- [ ] Studio: scrubber, props panel, render button
-- [ ] Parallel rendering in chunks
+- [x] Engine: render a page frame by frame and encode to MP4 (`karka smoke`)
+- [x] Several browser processes, with automatic choice of how many
+- [ ] `karka still` and `karka render`
+- [ ] TypeScript runtime: `useFrame`, `interpolate`, `Sequence`, `delayRender`
+- [ ] Audio
+- [ ] Studio: preview, scrubber, props panel, render button
 - [ ] `<Video>` input with hardware decoding
-- [ ] Review mode with frame comments
-- [ ] `OnAcceleratedPaint` GPU texture path on Linux
+- [ ] GPU texture path (`OnAcceleratedPaint`), so frames skip the CPU copy
 
-## Known limits
-
-- The GPU texture path (`OnAcceleratedPaint`) is least tested on Linux. `OnPaint` is the default until it is verified.
-- Each CEF upgrade can break capture. The CEF version is pinned.
-- Fonts and images must load through `delayRender()`, or frames can flicker between chunks.
-
-## Contributing
-
-Issues and pull requests are welcome. For larger changes, open an issue first so the approach can be agreed before you write code.
+**Known limits:** NVENC (`h264_nvenc`, the Linux default) and the whole Linux build have not run yet. Each CEF upgrade can break frame capture, so the CEF version is pinned.
 
 ## License
 
-Karkataka is licensed under the [MIT License](LICENSE).
-
-You can use, change and share it for free, including in commercial and closed-source products. Keep the copyright notice and license text in your copies. Videos you render with Karkataka are yours.
+[MIT](LICENSE). You can use, change and share it for free, including in commercial products. Videos you render with Karkataka are yours.
 
 ## Name
 

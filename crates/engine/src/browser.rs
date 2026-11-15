@@ -90,6 +90,9 @@ struct State {
     begin_frames: u64,
     /// `begin_frames` at the most recent paint.
     painted_at: u64,
+    /// A redraw after a stale paint is already posted. CPU painting can paint several times per
+    /// begin frame; without this each stale paint posts its own redraw and they multiply.
+    redraw_pending: bool,
     last_progress: Instant,
     tx: Option<SyncSender<Frame>>,
     error: Option<String>,
@@ -107,6 +110,7 @@ fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<(), 
         started: false,
         begin_frames: 0,
         painted_at: 0,
+        redraw_pending: false,
         last_progress: Instant::now(),
         tx: Some(tx),
         error: None,
@@ -245,7 +249,14 @@ wrap_task! {
 
     impl Task {
         fn execute(&self) {
-            begin_frame(&self.state, &self.browser);
+            let active = {
+                let mut s = self.state.borrow_mut();
+                s.redraw_pending = false;
+                s.n < s.frames && s.error.is_none()
+            };
+            if active {
+                begin_frame(&self.state, &self.browser);
+            }
         }
     }
 }
@@ -367,7 +378,7 @@ wrap_render_handler! {
             let pixels = unsafe { std::slice::from_raw_parts(buffer, w * (h + 1) * 4) };
             if page::read_marker(pixels, w, h) == Some(n) {
                 emit(&self.state, browser, pixels[..w * h * 4].to_vec());
-            } else {
+            } else if !std::mem::replace(&mut self.state.borrow_mut().redraw_pending, true) {
                 // An older frame (or nothing yet): draw again, a little later and from a fresh
                 // task. Calling begin_frame here would recurse when CEF paints synchronously.
                 let mut task = KarkaBeginFrame::new(self.state.clone(), browser.clone());

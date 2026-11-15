@@ -37,7 +37,8 @@ Every speed change is compared with Remotion on the same scene.
 - **Port:** Remotion renders on `--port=3917`, because port 3000 on this Mac is taken by an unrelated Nuxt dev server.
 - **Release binaries:** until `bundle-karka --release` exists, build with `cargo build --release -p karka --bins` and copy the binaries into `target/bundle/karka.app`. Delete each old file first: copying over a binary in place makes macOS kill it on launch (exit code 137).
 - **Machine:** Apple M1, 8 GB. Memory is tight: check swap (`sysctl vm.swapusage`) before trusting a slow run.
-- **Latest (2026-11-15):** karka `--software` (auto mode, probe picked 1 worker) 4.4 s, karka `--software --mode multi` (2 workers) 7.3 s, karka GPU 6.4–6.7 s, Remotion hardware encoding 9.5–10.4 s, Remotion default 11.5–11.8 s.
+- **Latest (2026-11-15, after the redraw fix):** karka `--software` 4.2–4.3 s, karka `--software --mode multi` (2 workers) 6.1–6.8 s, karka GPU 6.5 s, Remotion hardware encoding 9.6–10.3 s, Remotion default 11.5–11.8 s.
+- **Redraw count:** `KARKA_DEBUG=1` prints begin frames sent. Healthy is a few per frame (bench scene: GPU 306, software 1973 for 300 frames). Thousands per frame means redraws are multiplying again.
 
 ## Blocked
 

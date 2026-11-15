@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Render every test scene in every mode and check every frame (unique, in order, right frame number).
+# Render every test scene in every mode and check every frame shows its own frame number (so it is
+# unique and in order), and that the engine does not flood Chromium with redraw requests.
 #
 #   tests/scenes/run.sh                 all scenes, all modes
 #   tests/scenes/run.sh webgl svg       only these scenes
@@ -14,6 +15,9 @@ cd "$(dirname "$0")/../.."
 
 FRAMES=${FRAMES:-120}
 MODES=${MODES:-gpu software gpu-multi software-multi}
+# Redraw requests allowed per frame. Healthy renders send a few; the redraw flood fixed on
+# 2026-11-15 sent ~930. Set from the scene suite's worst healthy run, with headroom.
+MAX_BEGIN_FRAMES=${MAX_BEGIN_FRAMES:-30}
 if [[ $(uname -s) == Darwin ]]; then KARKA=target/bundle/karka.app/Contents/MacOS/karka; else KARKA=target/release/karka; fi
 dir=tests/scenes
 
@@ -32,12 +36,20 @@ for scene in "${scenes[@]}"; do
     flags=(--mode single)
     [[ $mode == *multi ]] && flags=(--mode multi --workers 2)
     [[ $mode == software* ]] && flags+=(--software)
-    json=$("$KARKA" smoke --page "$out/page.html" --out "$out" --frames "$FRAMES" --json "${flags[@]}" 2>"$out/stderr.log")
+    # KARKA_DEBUG makes every render process print how many begin frames (redraw requests) it sent.
+    json=$(KARKA_DEBUG=1 "$KARKA" smoke --page "$out/page.html" --out "$out" --frames "$FRAMES" --json "${flags[@]}" 2>"$out/stderr.log")
+    begin_frames=$(grep -o 'debug: [0-9]* begin frames' "$out/stderr.log" | awk '{ s += $2 } END { print s + 0 }')
     result=$(python3 -c '
 import json, sys
-d = json.loads(sys.argv[1])
-print("ok %5.1f fps" % d["result"]["render_fps"] if d["ok"] else "FAIL " + d["error"])
-' "$json" 2>/dev/null || echo "FAIL crashed (no JSON; see $out/stderr.log)")
+d, begins, frames, limit = json.loads(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+per_frame = begins / frames
+if not d["ok"]:
+    print("FAIL " + d["error"])
+elif per_frame > limit:
+    print("FAIL redraw flood: %.0f begin frames per frame (limit %g)" % (per_frame, limit))
+else:
+    print("ok %5.1f fps  %4.1f begin frames/frame" % (d["result"]["render_fps"], per_frame))
+' "$json" "$begin_frames" "$FRAMES" "$MAX_BEGIN_FRAMES" 2>/dev/null || echo "FAIL crashed (no JSON; see $out/stderr.log)")
     printf '%-16s %-15s %s\n' "$scene" "$mode" "$result"
     [[ $result == ok* ]] || failed=$((failed + 1))
   done

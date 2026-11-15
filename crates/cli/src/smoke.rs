@@ -1,8 +1,7 @@
-//! `karka smoke`: render a page, check every frame is unique and in order, write frame0.png and smoke.mp4.
+//! `karka smoke`: render a page, check every frame shows its own number, write frame0.png and smoke.mp4.
+//! Frames with different numbers differ in pixels, so this also proves every frame is unique and in order.
 
 use serde_json::{Value, json};
-use std::collections::HashSet;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
 pub const WIDTH: u32 = 1080;
@@ -38,7 +37,6 @@ pub fn run(opts: Options) -> Result<Value, String> {
     let encoder = opts.encoder.unwrap_or(karkataka_encode::default_h264_encoder());
     let mut video = karkataka_encode::Encoder::spawn(&mp4_path, WIDTH, HEIGHT, FPS, encoder)?;
 
-    let mut seen = HashSet::new();
     let started = std::time::Instant::now();
     let job = karkataka_engine::Job {
         html: &html,
@@ -49,7 +47,7 @@ pub fn run(opts: Options) -> Result<Value, String> {
         gpu: opts.gpu,
     };
     karkataka_engine::render(&job, |n, bgra| {
-        check_frame(n, bgra, &mut seen)?;
+        check_frame(n, bgra)?;
         if n == 0 {
             write_png(&png_path, bgra)?;
         }
@@ -71,17 +69,12 @@ pub fn run(opts: Options) -> Result<Value, String> {
     }))
 }
 
-/// Frame `n` must show its own number and differ from every earlier frame.
-fn check_frame(n: u32, bgra: &[u8], seen: &mut HashSet<u64>) -> Result<(), String> {
+/// Frame `n` must show its own number.
+fn check_frame(n: u32, bgra: &[u8]) -> Result<(), String> {
     match decode_frame_number(bgra) {
         Some(decoded) if decoded == n => {}
         Some(decoded) => return Err(format!("frame {n}: captured pixels show frame {decoded} (out of order)")),
         None => return Err(format!("frame {n}: frame-number cells are missing or not black/white")),
-    }
-    let mut hasher = DefaultHasher::new();
-    bgra.hash(&mut hasher);
-    if !seen.insert(hasher.finish()) {
-        return Err(format!("frame {n}: identical to an earlier frame"));
     }
     Ok(())
 }
@@ -130,10 +123,9 @@ fn decodes_frame_number_cells() {
 }
 
 #[test]
-fn rejects_wrong_or_repeated_frames() {
-    let mut seen = HashSet::new();
-    assert!(check_frame(5, &frame_with_number(5), &mut seen).is_ok());
-    assert!(check_frame(6, &frame_with_number(5), &mut seen).unwrap_err().contains("out of order"));
-    // Same number twice means the same pixels here, so it is caught as a repeat.
-    assert!(check_frame(5, &frame_with_number(5), &mut seen).unwrap_err().contains("identical"));
+fn rejects_wrong_or_missing_frame_numbers() {
+    assert!(check_frame(5, &frame_with_number(5)).is_ok());
+    // A stale repeat of frame 5 where 6 is due.
+    assert!(check_frame(6, &frame_with_number(5)).unwrap_err().contains("out of order"));
+    assert!(check_frame(6, &vec![0u8; (WIDTH * HEIGHT * 4) as usize]).unwrap_err().contains("missing"));
 }
