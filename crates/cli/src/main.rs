@@ -155,12 +155,23 @@ fn cli_definition_is_valid() {
 
 #[test]
 fn chooses_workers_per_mode() {
-    let plan = |workers| move || probe::Plan { workers, reason: "test".into() };
+    // Counts probes, so the test can check that only auto and multi without --workers probe.
+    let probes = std::cell::Cell::new(0);
+    let plan = |workers| {
+        let probes = &probes;
+        move || {
+            probes.set(probes.get() + 1);
+            probe::Plan { workers, reason: "test".into() }
+        }
+    };
     assert_eq!(choose_workers(Mode::Auto, None, 300, plan(3)).unwrap().0, 3);
     assert_eq!(choose_workers(Mode::Multi, None, 300, plan(1)).unwrap().0, 2);
+    assert_eq!(probes.get(), 2);
     assert_eq!(choose_workers(Mode::Multi, Some(4), 300, plan(1)).unwrap().0, 4);
-    assert_eq!(choose_workers(Mode::Single, None, 300, || unreachable!("single must not probe")).unwrap().0, 1);
+    assert_eq!(choose_workers(Mode::Multi, Some(400), 300, plan(1)).unwrap().0, 300, "capped at the frame count");
+    assert_eq!(choose_workers(Mode::Single, None, 300, plan(1)).unwrap().0, 1);
     assert!(choose_workers(Mode::Single, Some(3), 300, plan(1)).is_err());
     assert!(choose_workers(Mode::Auto, Some(2), 300, plan(1)).is_err());
     assert!(choose_workers(Mode::Multi, Some(0), 300, plan(1)).is_err());
+    assert_eq!(probes.get(), 2, "single mode and explicit --workers must not probe");
 }

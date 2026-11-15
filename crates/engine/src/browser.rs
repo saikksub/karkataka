@@ -38,17 +38,20 @@ where
     #[cfg(target_os = "macos")]
     let _loader = {
         // The framework sits in the .app bundle, next to the executable (see `bundle-karka`).
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = std::env::current_exe().ok().ok_or("cannot find the karka executable")?;
+        // The cef crate's loader panics when the framework is missing, so look for it first.
+        let framework = exe.with_file_name("../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework");
+        ensure(framework.exists(), "cannot find the CEF framework; run karka from its .app bundle")?;
         let loader = library_loader::LibraryLoader::new(&exe, false);
-        if !loader.load() {
-            return Err("cannot load the CEF framework; run karka from its .app bundle".into());
-        }
+        ensure(loader.load(), "cannot load the CEF framework; rebuild the app with bundle-karka")?;
         loader
     };
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
 
     // CEF allows one process per profile folder, so each process gets its own temporary one.
+    // It must be absolute: CEF ignores a relative one and falls back to a profile all processes share.
     let profile = std::env::temp_dir().join(format!("karka-cef-{}", std::process::id()));
+    let profile = std::path::absolute(&profile).unwrap_or(profile);
     let args = Args::new();
     let settings = Settings {
         windowless_rendering_enabled: 1,
@@ -58,25 +61,31 @@ where
         ..Default::default()
     };
     let mut app = KarkaApp::new(job.gpu);
-    if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
-        return Err("CEF failed to initialize".into());
-    }
+    let started = initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut());
+    ensure(started == 1, "CEF failed to initialize")?;
 
     // A few frames of buffer, so a slow consumer pauses rendering instead of filling memory.
     let (tx, rx) = sync_channel::<Frame>(4);
-    let result = std::thread::scope(|scope| {
-        let consumer = scope.spawn(move || rx.iter().try_for_each(|(n, pixels)| on_frame(n, &pixels)));
-        let rendered = drive(job, first, step, tx);
-        let consumed = consumer.join().map_err(|_| "frame consumer panicked".to_string())?;
-        // A consumer error explains why rendering stopped, so report it first.
-        consumed.and(rendered)
+    let mut consumed = Ok(());
+    // If `on_frame` panics, the scope passes the panic on to our caller.
+    let rendered = std::thread::scope(|scope| {
+        let slot = &mut consumed;
+        scope.spawn(move || *slot = rx.iter().try_for_each(|(n, pixels)| on_frame(n, &pixels)));
+        drive(job, first, step, tx)
     });
+    // A consumer error explains why rendering stopped, so report it first.
+    let result = consumed.and(rendered);
     shutdown();
     let _ = std::fs::remove_dir_all(&profile);
     result
 }
 
 type Frame = (u32, Vec<u8>);
+
+/// `Err(error)` unless `ok`.
+fn ensure(ok: bool, error: &str) -> Result<(), String> {
+    if ok { Ok(()) } else { Err(error.into()) }
+}
 
 struct State {
     frames: u32,

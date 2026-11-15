@@ -18,7 +18,10 @@ MODES=${MODES:-gpu software gpu-multi software-multi}
 # Redraw requests allowed per frame. Healthy renders send a few; the redraw flood fixed on
 # 2026-11-15 sent ~930. Set from the scene suite's worst healthy run, with headroom.
 MAX_BEGIN_FRAMES=${MAX_BEGIN_FRAMES:-30}
-if [[ $(uname -s) == Darwin ]]; then KARKA=target/bundle/karka.app/Contents/MacOS/karka; else KARKA=target/release/karka; fi
+# KARKA overrides the binary (scripts/coverage.sh points it at an instrumented build).
+if [[ -z ${KARKA:-} ]]; then
+  if [[ $(uname -s) == Darwin ]]; then KARKA=target/bundle/karka.app/Contents/MacOS/karka; else KARKA=target/release/karka; fi
+fi
 dir=tests/scenes
 
 scenes=("$@")

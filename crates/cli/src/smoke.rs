@@ -95,12 +95,14 @@ fn decode_frame_number(bgra: &[u8]) -> Option<u32> {
 
 fn write_png(path: &Path, bgra: &[u8]) -> Result<(), String> {
     let rgba: Vec<u8> = bgra.as_chunks::<4>().0.iter().flat_map(|&[b, g, r, a]| [r, g, b, a]).collect();
-    let file = std::fs::File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-    let mut png = png::Encoder::new(std::io::BufWriter::new(file), WIDTH, HEIGHT);
+    // Encode in memory, where only wrong sizes could fail, then write the file in one go.
+    let mut bytes = Vec::new();
+    let mut png = png::Encoder::new(&mut bytes, WIDTH, HEIGHT);
     png.set_color(png::ColorType::Rgba);
     png.write_header()
         .and_then(|mut w| w.write_image_data(&rgba))
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+        .expect("a full-size RGBA frame encodes");
+    std::fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 #[cfg(test)]

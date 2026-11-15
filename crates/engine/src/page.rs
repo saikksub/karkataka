@@ -98,3 +98,28 @@ fn reads_marker_row() {
     set(&mut px, MARKER_BITS + 1, false);
     assert_eq!(read_marker(&px, w, h), Some(0b10010));
 }
+
+#[test]
+fn half_drawn_marker_rows_are_not_trusted() {
+    let (w, h) = (80, 2);
+    let paint = |cells: &[(usize, [u8; 4])]| {
+        let mut px = vec![0u8; w * (h + 1) * 4];
+        for &(i, color) in cells {
+            for x in i * MARKER_CELL..(i + 1) * MARKER_CELL {
+                px[(h * w + x) * 4..][..4].copy_from_slice(&color);
+            }
+        }
+        px
+    };
+    let (white, black) = ([255; 4], [0, 0, 0, 255]);
+    // Only the first check cell is drawn.
+    assert_eq!(read_marker(&paint(&[(MARKER_BITS, white)]), w, h), None);
+    // Both check cells are drawn, but the bit cells are not.
+    assert_eq!(read_marker(&paint(&[(MARKER_BITS, white), (MARKER_BITS + 1, black)]), w, h), None);
+}
+
+#[test]
+fn scripts_carry_height_and_frame() {
+    assert!(marker_script(1920).contains("top:1920px"));
+    assert_eq!(frame_script(42), "window.__karkaFrame(42)");
+}

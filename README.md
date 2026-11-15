@@ -107,6 +107,15 @@ When a render fails, look in `out/scenes/<scene>/<mode>/`: `stderr.log` has the 
 | `dom-stress` | 2500 elements restyled every frame |
 | `layout` | grid and flex reflow, scrolling with sticky headers |
 
+**4. Optional: code coverage** (about 2 minutes). Install the tool once with `brew install cargo-llvm-cov` and `rustup component add llvm-tools-preview`, then:
+
+```bash
+scripts/coverage.sh          # summary table
+scripts/coverage.sh --html   # also writes target/coverage/html/index.html
+```
+
+It runs the unit tests, real renders in every mode, and every error path it can trigger (bad options, missing or failing ffmpeg, broken pages, a damaged CEF framework, workers that fail), using an instrumented build in `target/coverage`, so your normal build and app are not touched. It fails unless every line is covered. Last result: 100% of lines and functions, 99.5% of regions; the uncovered regions are failures the OS or CEF never report here, such as CEF failing to create a browser.
+
 To add a scene, add `tests/scenes/<name>.html`. It defines `window.scene = (n) => { ... }`, which draws frame `n` into `#stage` (it may return a promise), and calls `fail("why")` if it cannot run. The harness (`_head.html`, `_tail.html`) adds the frame-number cells.
 
 ## Benchmark against Remotion

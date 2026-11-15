@@ -1,5 +1,6 @@
 //! Probe the machine and choose how many render workers to run before a render starts.
 
+#[cfg(any(target_os = "macos", test))]
 use std::process::Command;
 
 /// What the machine has to spare right now.
@@ -22,19 +23,24 @@ const CORES_PER_WORKER: u32 = 4;
 /// Each worker starts its own Chromium (~1 s); fewer frames than this per worker don't repay it.
 const MIN_FRAMES_PER_WORKER: u32 = 60;
 
+#[cfg(target_os = "macos")]
 pub fn probe() -> Machine {
-    let logical = std::thread::available_parallelism().map_or(1, |n| n.get() as u32);
-    if cfg!(target_os = "macos") {
-        let cores = sysctl("hw.perflevel0.physicalcpu").or_else(|| sysctl("hw.physicalcpu"));
-        let vm_stat = Command::new("vm_stat").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-        Machine {
-            cores: cores.map_or(logical, |c| c as u32),
-            available_mb: vm_stat.as_deref().and_then(vm_stat_available_mb),
-        }
-    } else {
-        let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
-        Machine { cores: logical, available_mb: meminfo.as_deref().and_then(meminfo_available_mb) }
+    let vm_stat = Command::new("vm_stat").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    Machine {
+        // Performance cores on Apple silicon; Intel Macs have no perflevels.
+        cores: first_sysctl(&["hw.perflevel0.physicalcpu", "hw.physicalcpu"]).map_or(logical_cores(), |c| c as u32),
+        available_mb: vm_stat.as_deref().and_then(vm_stat_available_mb),
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn probe() -> Machine {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
+    Machine { cores: logical_cores(), available_mb: meminfo.as_deref().and_then(meminfo_available_mb) }
+}
+
+fn logical_cores() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
 }
 
 /// The smallest of what cores, memory and frame count allow, never below 1.
@@ -56,17 +62,22 @@ pub fn plan(machine: &Machine, frames: u32) -> Plan {
     }
 }
 
-fn sysctl(name: &str) -> Option<u64> {
-    let out = Command::new("sysctl").args(["-n", name]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+/// The first of these sysctl values that exists.
+#[cfg(any(target_os = "macos", test))]
+fn first_sysctl(names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| {
+        let out = Command::new("sysctl").args(["-n", name]).output().ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    })
 }
 
 /// Free + inactive + speculative + purgeable pages: what macOS reclaims before it swaps.
+#[cfg(any(target_os = "macos", test))]
 fn vm_stat_available_mb(text: &str) -> Option<u64> {
     let page: u64 = text.split("page size of ").nth(1)?.split_whitespace().next()?.parse().ok()?;
     let pages = |label: &str| -> Option<u64> {
         let line = text.lines().find(|l| l.starts_with(label))?;
-        line.rsplit(':').next()?.trim().trim_end_matches('.').parse().ok()
+        line[label.len()..].trim().trim_end_matches('.').parse().ok()
     };
     let total = ["Pages free:", "Pages inactive:", "Pages speculative:", "Pages purgeable:"]
         .iter()
@@ -75,6 +86,7 @@ fn vm_stat_available_mb(text: &str) -> Option<u64> {
     Some(total * page / 1_048_576)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn meminfo_available_mb(text: &str) -> Option<u64> {
     let line = text.lines().find(|l| l.starts_with("MemAvailable:"))?;
     Some(line.split_whitespace().nth(1)?.parse::<u64>().ok()? / 1024)
@@ -97,4 +109,36 @@ fn reads_free_memory() {
     let vm = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:  4497.\nPages active: 85156.\nPages inactive: 81270.\nPages speculative: 2895.\nPages purgeable: 2.\n";
     assert_eq!(vm_stat_available_mb(vm), Some((4497 + 81270 + 2895 + 2) * 16384 / 1_048_576));
     assert_eq!(meminfo_available_mb("MemTotal: 100 kB\nMemAvailable:   2097152 kB\n"), Some(2048));
+}
+
+#[test]
+fn unreadable_memory_reports_are_unknown() {
+    let header = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n";
+    for text in [
+        "no header at all",
+        "(page size of ",
+        "(page size of many bytes)",
+        header,
+        &format!("{header}Pages free: lots.\nPages inactive: 1.\nPages speculative: 1.\nPages purgeable: 1.\n"),
+    ] {
+        assert_eq!(vm_stat_available_mb(text), None, "{text:?}");
+    }
+    for text in ["MemTotal: 1 kB", "MemAvailable:", "MemAvailable: lots kB"] {
+        assert_eq!(meminfo_available_mb(text), None, "{text:?}");
+    }
+}
+
+#[test]
+fn probe_reads_this_machine() {
+    let machine = probe();
+    assert!(machine.cores >= 1);
+    assert!(machine.available_mb.is_some_and(|mb| mb > 0));
+    assert!(plan(&machine, 300).workers >= 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn first_sysctl_skips_missing_names() {
+    assert_eq!(first_sysctl(&["no.such.name", "hw.ncpu"]), first_sysctl(&["hw.ncpu"]));
+    assert_eq!(first_sysctl(&["no.such.name"]), None);
 }
