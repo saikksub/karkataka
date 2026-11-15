@@ -1,20 +1,235 @@
-//! Offscreen CEF browser that paints one frame per external begin frame and hands back raw BGRA pixels.
+//! Render a web page frame by frame in offscreen CEF (Chromium) and hand back raw BGRA pixels.
 //!
-//! The frame loop is driven by CEF callbacks inside `run_message_loop`. Polling with
+//! One browser runs per process. With several workers, `render` starts copies of the current
+//! executable as render workers: worker `k` of `N` renders frames `k, k+N, k+2N, ...` and streams
+//! them back over a pipe. (Several offscreen browsers in one CEF process stall each other's
+//! rendering, so parallelism comes from processes.)
+//!
+//! Inside a process the frame loop is driven by CEF callbacks in `run_message_loop`; polling with
 //! `do_message_loop_work` instead costs ~15 ms per wait on macOS.
 //!
-//! Chromium's browser-side compositor draws whatever page surface it has, so a paint can show an
-//! older frame, sometimes several begin frames late. So each paint says which frame it shows: the
-//! view is one row taller than the video, and that hidden row holds black/white marker cells with
-//! the frame number, set in the same JavaScript task as `__setFrame(n)`. A paint is accepted only
-//! when its marker reads `n`; the marker row is cropped off.
+//! Chromium can paint an older frame, sometimes several begin frames late. So each paint says
+//! which frame it shows: the view is one row taller than the video, and that hidden row holds
+//! black/white marker cells with the frame number, set in the same JavaScript task as
+//! `__setFrame(n)`. A paint is accepted only when its marker reads `n`; the row is cropped off.
+
+pub mod probe;
 
 use cef::{args::Args, *};
 use std::cell::RefCell;
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::raw::c_int;
+use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
+
+/// What to render.
+pub struct Job<'a> {
+    /// The page. It must define `window.__setFrame(n)`, which draws frame `n` (the same `n`
+    /// always gives the same picture), either right away or by returning a promise.
+    pub html: &'a str,
+    pub width: u32,
+    pub height: u32,
+    pub frames: u32,
+    /// Processes rendering in parallel, each with its own browser.
+    pub workers: u32,
+    /// GPU raster and compositing. `false` uses Chromium's CPU (software) path.
+    pub gpu: bool,
+}
+
+/// Run this first in `main`, before parsing arguments. CEF relaunches the executable for its
+/// GPU, renderer and utility processes, and `render` relaunches it as render workers; for those
+/// it returns `Some(exit_code)` and the caller must exit with it.
+pub fn run_subprocess() -> Option<i32> {
+    // CEF's own processes carry --type=... (and inherit KARKA_WORKER, so check --type first).
+    if !std::env::args().any(|a| a.starts_with("--type=")) {
+        return std::env::var_os(WORKER_ENV).is_some().then(run_worker);
+    }
+    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+    let args = Args::new();
+    let code = execute_process(Some(args.as_main_args()), Some(&mut KarkaApp::new(true)), std::ptr::null_mut());
+    (code >= 0).then_some(code)
+}
+
+/// Render frames `0..job.frames` and call `on_frame(n, bgra_pixels)` for each, in order.
+pub fn render<F>(job: &Job, mut on_frame: F) -> Result<(), String>
+where
+    F: FnMut(u32, &[u8]) -> Result<(), String> + Send,
+{
+    let workers = job.workers.clamp(1, job.frames.max(1));
+    if workers == 1 {
+        return render_in_process(job, 0, 1, on_frame);
+    }
+
+    let mut children = Vec::new();
+    let mut inboxes = Vec::new();
+    for worker in 0..workers {
+        match spawn_worker(job, worker, workers) {
+            Ok((child, inbox)) => {
+                children.push(child);
+                inboxes.push(inbox);
+            }
+            Err(error) => {
+                stop(&mut children);
+                return Err(error);
+            }
+        }
+    }
+    // Frame n comes from worker n % workers, and each worker sends its frames in order, so
+    // frames are taken in order with no reordering; the pipes hold back workers that run ahead.
+    let result = (0..job.frames).try_for_each(|n| match inboxes[(n % workers) as usize].recv() {
+        Ok(Ok((m, pixels))) if m == n => on_frame(n, &pixels),
+        Ok(Ok((m, _))) => Err(format!("worker sent frame {m} where frame {n} was due")),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(format!("render worker {} exited before frame {n}", n % workers)),
+    });
+    if result.is_err() {
+        stop(&mut children);
+    }
+    for child in &mut children {
+        let _ = child.wait();
+    }
+    result
+}
+
+/// Set on a render worker; it reads its job from stdin and writes frames to stdout.
+const WORKER_ENV: &str = "KARKA_WORKER";
+/// A frame record is `n: u32` then the pixels; `n == ERROR_RECORD` is followed by a length and a message.
+const ERROR_RECORD: u32 = u32::MAX;
+
+type Inbox = Receiver<Result<(u32, Vec<u8>), String>>;
+
+fn spawn_worker(job: &Job, worker: u32, workers: u32) -> Result<(Child, Inbox), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = Command::new(exe)
+        .env(WORKER_ENV, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot start render worker: {e}"))?;
+    let header = format!("{} {} {} {worker} {workers} {}\n", job.width, job.height, job.frames, u8::from(job.gpu));
+    let mut stdin = child.stdin.take().ok_or("worker has no stdin")?;
+    stdin
+        .write_all(header.as_bytes())
+        .and_then(|()| stdin.write_all(job.html.as_bytes()))
+        .map_err(|e| format!("cannot send the job to a render worker: {e}"))?;
+    drop(stdin);
+
+    let mut stdout = BufReader::new(child.stdout.take().ok_or("worker has no stdout")?);
+    let len = (job.width * job.height * 4) as usize;
+    let (tx, rx) = sync_channel(2);
+    std::thread::spawn(move || {
+        loop {
+            let record = (|| -> std::io::Result<Result<(u32, Vec<u8>), String>> {
+                let n = read_u32(&mut stdout)?;
+                if n == ERROR_RECORD {
+                    let mut message = vec![0; read_u32(&mut stdout)? as usize];
+                    stdout.read_exact(&mut message)?;
+                    return Ok(Err(String::from_utf8_lossy(&message).into_owned()));
+                }
+                let mut pixels = vec![0; len];
+                stdout.read_exact(&mut pixels)?;
+                Ok(Ok((n, pixels)))
+            })();
+            // End of stream (worker done or dead) ends the channel; render() reports it if early.
+            let Ok(record) = record else { return };
+            let failed = record.is_err();
+            if tx.send(record).is_err() || failed {
+                return;
+            }
+        }
+    });
+    Ok((child, rx))
+}
+
+fn read_u32(r: &mut impl Read) -> std::io::Result<u32> {
+    let mut bytes = [0; 4];
+    r.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn stop(children: &mut [Child]) {
+    for child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// The render worker side: read the job from stdin, stream frames (or an error) to stdout.
+fn run_worker() -> i32 {
+    let mut stdin = BufReader::new(std::io::stdin().lock());
+    let mut header = String::new();
+    let mut html = String::new();
+    let parsed = stdin.read_line(&mut header).and_then(|_| stdin.read_to_string(&mut html));
+    let fields: Vec<u32> = header.split_whitespace().filter_map(|f| f.parse().ok()).collect();
+    let mut out = BufWriter::new(std::io::stdout());
+    let result = match (parsed, fields.as_slice()) {
+        (Ok(_), &[width, height, frames, first, step, gpu]) => {
+            let job = Job { html: &html, width, height, frames, workers: 1, gpu: gpu == 1 };
+            render_in_process(&job, first, step, |n, pixels| {
+                out.write_all(&n.to_le_bytes())
+                    .and_then(|()| out.write_all(pixels))
+                    .map_err(|e| format!("cannot send frame {n} to the parent: {e}"))
+            })
+        }
+        _ => Err("render worker started without a valid job on stdin".to_string()),
+    };
+    if let Err(error) = &result {
+        let _ = out
+            .write_all(&ERROR_RECORD.to_le_bytes())
+            .and_then(|()| out.write_all(&(error.len() as u32).to_le_bytes()))
+            .and_then(|()| out.write_all(error.as_bytes()));
+    }
+    let _ = out.flush();
+    i32::from(result.is_err())
+}
+
+/// Render frames `first, first+step, ...` below `job.frames` with one browser in this process.
+fn render_in_process<F>(job: &Job, first: u32, step: u32, mut on_frame: F) -> Result<(), String>
+where
+    F: FnMut(u32, &[u8]) -> Result<(), String> + Send,
+{
+    #[cfg(target_os = "macos")]
+    let _loader = {
+        // The framework sits in the .app bundle, next to the executable (see `bundle-karka`).
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let loader = library_loader::LibraryLoader::new(&exe, false);
+        if !loader.load() {
+            return Err("cannot load the CEF framework; run karka from its .app bundle".into());
+        }
+        loader
+    };
+    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
+
+    // CEF allows one process per profile folder, so each process gets its own temporary one.
+    let profile = std::env::temp_dir().join(format!("karka-cef-{}", std::process::id()));
+    let args = Args::new();
+    let settings = Settings {
+        windowless_rendering_enabled: 1,
+        no_sandbox: 1,
+        log_severity: LogSeverity::ERROR,
+        root_cache_path: profile.to_string_lossy().as_ref().into(),
+        ..Default::default()
+    };
+    let mut app = KarkaApp::new(job.gpu);
+    if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
+        return Err("CEF failed to initialize".into());
+    }
+
+    // A few frames of buffer, so a slow consumer pauses rendering instead of filling memory.
+    let (tx, rx) = sync_channel::<Frame>(4);
+    let result = std::thread::scope(|scope| {
+        let consumer = scope.spawn(move || rx.iter().try_for_each(|(n, pixels)| on_frame(n, &pixels)));
+        let rendered = drive(job, first, step, tx);
+        let consumed = consumer.join().map_err(|_| "frame consumer panicked".to_string())?;
+        // A consumer error explains why rendering stopped, so report it first.
+        consumed.and(rendered)
+    });
+    shutdown();
+    let _ = std::fs::remove_dir_all(&profile);
+    result
+}
 
 /// Marker cells in the extra bottom row: 16 bits of frame number, then a white and a black
 /// cell that confirm the row was drawn at all.
@@ -39,13 +254,21 @@ const MARKER_SCRIPT: &str = r##"(() => {
       for (let i = 0; i < 16; i++) cells[i].style.background = (n >> i) & 1 ? "#fff" : "#000";
     });
 })();"##;
-/// Fail when no frame completes for this long (page never logs ready, or Chromium never paints).
+
+/// Fail when no frame completes for this long (page never draws it, or Chromium never paints).
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// If a begin frame brings no paint at all, send another after this long. Only affects speed,
+/// never which frame is accepted: that is decided by the marker.
+const RETRY_AFTER_MS: i64 = 100;
+/// Pause before redrawing after a paint that showed an older frame. Redrawing at once starves
+/// the page, which then never applies the frame.
+const REDRAW_AFTER_MS: i64 = 2;
 
 type Frame = (u32, Vec<u8>);
 
 struct State {
     frames: u32,
+    step: u32,
     width: usize,
     height: usize,
     /// Frame currently being produced.
@@ -62,72 +285,13 @@ struct State {
 
 type Shared = Rc<RefCell<State>>;
 
-/// Run this first in `main`, before parsing arguments. CEF relaunches the executable for its
-/// GPU, renderer and utility processes; for those it returns `Some(exit_code)` and the caller must exit.
-pub fn run_subprocess() -> Option<i32> {
-    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-    let args = Args::new();
-    let code = execute_process(Some(args.as_main_args()), Some(&mut KarkaApp::new()), std::ptr::null_mut());
-    (code >= 0).then_some(code)
-}
-
-/// Load `html` in an offscreen browser of `width`x`height`, step frames `0..frames` and call
-/// `on_frame(n, bgra_pixels)` for each, in order, on a separate thread so it overlaps rendering.
-/// The page must define `window.__setFrame(n)`, which applies frame `n`, either right away or
-/// by returning a promise that resolves once the frame is ready.
-pub fn render<F>(html: &str, width: u32, height: u32, frames: u32, mut on_frame: F) -> Result<(), String>
-where
-    F: FnMut(u32, &[u8]) -> Result<(), String> + Send,
-{
-    #[cfg(target_os = "macos")]
-    let _loader = {
-        // The framework sits in the .app bundle, next to the executable (see `bundle-karka`).
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let loader = library_loader::LibraryLoader::new(&exe, false);
-        if !loader.load() {
-            return Err("cannot load the CEF framework; run karka from its .app bundle".into());
-        }
-        loader
-    };
-    if run_subprocess().is_some() {
-        return Err("render() called from a CEF subprocess".into());
-    }
-
-    let args = Args::new();
-    let settings = Settings {
-        windowless_rendering_enabled: 1,
-        no_sandbox: 1,
-        log_severity: LogSeverity::ERROR,
-        ..Default::default()
-    };
-    if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut KarkaApp::new()), std::ptr::null_mut()) != 1 {
-        return Err("CEF failed to initialize".into());
-    }
-
-    // A few frames of buffer, so a slow consumer pauses rendering instead of filling memory.
-    let (tx, rx) = sync_channel::<Frame>(4);
-    let result = std::thread::scope(|scope| {
-        let consumer = scope.spawn(move || consume(rx, &mut on_frame));
-        let rendered = drive(html, width, height, frames, tx);
-        let consumed = consumer.join().map_err(|_| "frame consumer panicked".to_string())?;
-        // A consumer error explains why rendering stopped, so report it first.
-        consumed.and(rendered)
-    });
-    shutdown();
-    result
-}
-
-fn consume(rx: Receiver<Frame>, on_frame: &mut impl FnMut(u32, &[u8]) -> Result<(), String>) -> Result<(), String> {
-    // Returning early drops `rx`, which makes the renderer's next send fail and stop.
-    rx.iter().try_for_each(|(n, pixels)| on_frame(n, &pixels))
-}
-
-fn drive(html: &str, width: u32, height: u32, frames: u32, tx: SyncSender<Frame>) -> Result<(), String> {
+fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<(), String> {
     let state: Shared = Rc::new(RefCell::new(State {
-        frames,
-        width: width as usize,
-        height: height as usize,
-        n: 0,
+        frames: job.frames,
+        step,
+        width: job.width as usize,
+        height: job.height as usize,
+        n: first,
         started: false,
         begin_frames: 0,
         painted_at: 0,
@@ -143,11 +307,11 @@ fn drive(html: &str, width: u32, height: u32, frames: u32, tx: SyncSender<Frame>
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
     let mut client = KarkaClient::new(
         // One extra row holds the frame marker.
-        KarkaRender::new(state.clone(), width as c_int, height as c_int + 1),
-        KarkaLoad::new(state.clone(), height),
+        KarkaRender::new(state.clone(), job.width as c_int, job.height as c_int + 1),
+        KarkaLoad::new(state.clone(), job.height),
         KarkaLifeSpan::new(),
     );
-    let url = data_url(html);
+    let url = data_url(job.html);
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut client),
@@ -158,17 +322,17 @@ fn drive(html: &str, width: u32, height: u32, frames: u32, tx: SyncSender<Frame>
     )
     .ok_or("CEF could not create the browser")?;
 
-    watchdog(state.clone(), browser.clone());
+    watchdog(state.clone(), browser);
     run_message_loop();
 
     let mut state = state.borrow_mut();
     state.tx = None; // ends the consumer
     if std::env::var_os("KARKA_DEBUG").is_some() {
-        eprintln!("debug: {} begin frames for {} frames", state.begin_frames, state.n);
+        eprintln!("debug: {} begin frames, stopped at frame {}", state.begin_frames, state.n);
     }
     match state.error.take() {
         Some(error) => Err(error),
-        None if state.n < frames => Err(format!("stopped after {} of {frames} frames", state.n)),
+        None if state.n < job.frames => Err(format!("stopped at frame {} of {}", state.n, job.frames)),
         None => Ok(()),
     }
 }
@@ -226,9 +390,6 @@ fn begin_frame(state: &Shared, browser: &Browser) {
     post_delayed_task(ThreadId::UI, Some(&mut task), RETRY_AFTER_MS);
 }
 
-/// Only affects speed, never which frame is accepted: that is decided by the marker.
-const RETRY_AFTER_MS: i64 = 20;
-
 wrap_task! {
     struct KarkaRetry {
         state: Shared,
@@ -249,7 +410,20 @@ wrap_task! {
     }
 }
 
-/// Hand frame `n` to the consumer and move on to the next frame (or close when done).
+wrap_task! {
+    struct KarkaBeginFrame {
+        state: Shared,
+        browser: Browser,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            begin_frame(&self.state, &self.browser);
+        }
+    }
+}
+
+/// Hand frame `n` to the consumer and move on to this worker's next frame (or close when done).
 fn emit(state: &Shared, browser: &Browser, pixels: Vec<u8>) {
     let (n, tx) = {
         let s = state.borrow();
@@ -261,7 +435,7 @@ fn emit(state: &Shared, browser: &Browser, pixels: Vec<u8>) {
     }
     let next = {
         let mut s = state.borrow_mut();
-        s.n += 1;
+        s.n += s.step;
         s.last_progress = Instant::now();
         (s.n < s.frames).then_some(s.n)
     };
@@ -303,7 +477,9 @@ wrap_task! {
 }
 
 wrap_app! {
-    struct KarkaApp;
+    struct KarkaApp {
+        gpu: bool,
+    }
 
     impl App {
         fn on_before_command_line_processing(
@@ -329,6 +505,11 @@ wrap_app! {
                 "force-color-profile=srgb",
             ] {
                 command_line.append_switch(Some(&switch.into()));
+            }
+            if !self.gpu {
+                for switch in ["disable-gpu", "disable-gpu-compositing"] {
+                    command_line.append_switch(Some(&switch.into()));
+                }
             }
         }
     }
@@ -373,7 +554,7 @@ wrap_render_handler! {
                 let s = self.state.borrow();
                 (s.n, s.width, s.height, s.started && s.n < s.frames && s.error.is_none())
             };
-            // Paints before frame 0 starts or after the last frame (while closing) are not ours.
+            // Paints before the first frame starts or after the last one (while closing) are not ours.
             if !active {
                 return;
             }
@@ -389,8 +570,10 @@ wrap_render_handler! {
             if read_marker(pixels, w, h) == Some(n) {
                 emit(&self.state, browser, pixels[..w * h * 4].to_vec());
             } else {
-                // An older frame (or nothing yet): draw again.
-                begin_frame(&self.state, browser);
+                // An older frame (or nothing yet): draw again, a little later and from a fresh
+                // task. Calling begin_frame here would recurse when CEF paints synchronously.
+                let mut task = KarkaBeginFrame::new(self.state.clone(), browser.clone());
+                post_delayed_task(ThreadId::UI, Some(&mut task), REDRAW_AFTER_MS);
             }
         }
     }
@@ -418,7 +601,8 @@ wrap_load_handler! {
                     let script = MARKER_SCRIPT.replace("{H}", &self.height.to_string());
                     frame.execute_java_script(Some(&script.as_str().into()), None, 0);
                 }
-                set_frame(&self.state, browser, 0);
+                let first = self.state.borrow().n;
+                set_frame(&self.state, browser, first);
             }
         }
     }

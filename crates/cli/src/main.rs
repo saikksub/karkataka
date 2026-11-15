@@ -53,7 +53,38 @@ enum Command {
         /// and draw the same frame-number cells (see crates/cli/src/smoke.html)
         #[arg(long)]
         page: Option<PathBuf>,
+        /// auto: probe cores and free memory and pick single or multi before starting.
+        /// single: one browser in this process. multi: several browsers, one process each
+        #[arg(long, value_enum, default_value = "auto")]
+        mode: Mode,
+        /// Worker count for multi mode [default: what the probe allows, at least 2]
+        #[arg(long)]
+        workers: Option<u32>,
+        /// Paint on the CPU instead of the GPU
+        #[arg(long)]
+        software: bool,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Mode {
+    Auto,
+    Single,
+    Multi,
+}
+
+/// Decide the worker count before the render starts, and say why.
+fn choose_workers(mode: Mode, workers: Option<u32>, frames: u32) -> Result<(u32, String), String> {
+    let plan = karkataka_engine::probe::plan(&karkataka_engine::probe::probe(), frames);
+    match (mode, workers) {
+        (Mode::Single, Some(n)) if n != 1 => Err("--workers needs --mode multi".into()),
+        (Mode::Single, _) => Ok((1, "single mode".into())),
+        (Mode::Multi, Some(0)) => Err("--workers must be at least 1".into()),
+        (Mode::Multi, Some(n)) => Ok((n, "multi mode, --workers".into())),
+        (Mode::Multi, None) => Ok((plan.workers.max(2), format!("multi mode; probe: {}", plan.reason))),
+        (Mode::Auto, Some(_)) => Err("--workers needs --mode multi".into()),
+        (Mode::Auto, None) => Ok((plan.workers, format!("auto; probe: {}", plan.reason))),
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -70,8 +101,7 @@ const HEIGHT: u32 = 1920;
 const FPS: u32 = 30;
 
 fn main() -> ExitCode {
-    // On macOS CEF subprocesses run from the separate karka_helper binary instead.
-    #[cfg(not(target_os = "macos"))]
+    // CEF subprocesses (Linux, Windows) and render workers re-run this binary.
     if let Some(code) = karkataka_engine::run_subprocess() {
         return ExitCode::from(code as u8);
     }
@@ -81,7 +111,8 @@ fn main() -> ExitCode {
         Command::Studio => Err("`karka studio` is not implemented yet".to_string()),
         Command::Render { .. } => Err("`karka render` is not implemented yet".to_string()),
         Command::Still { .. } => Err("`karka still` is not implemented yet".to_string()),
-        Command::Smoke { out, frames, encoder, page } => smoke(&out, frames, encoder.as_deref(), page.as_deref()),
+        Command::Smoke { out, frames, encoder, page, mode, workers, software } => choose_workers(mode, workers, frames)
+            .and_then(|plan| smoke(&out, frames, encoder.as_deref(), page.as_deref(), plan, !software)),
     };
     match result {
         Ok(value) => {
@@ -123,7 +154,7 @@ fn decode_frame_number(bgra: &[u8]) -> Option<u32> {
     })
 }
 
-fn smoke(out: &Path, frames: u32, encoder: Option<&str>, page: Option<&Path>) -> Result<Value, String> {
+fn smoke(out: &Path, frames: u32, encoder: Option<&str>, page: Option<&Path>, (workers, why): (u32, String), gpu: bool) -> Result<Value, String> {
     let html = match page {
         Some(path) => std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?,
         None => SMOKE_PAGE.to_string(),
@@ -136,7 +167,8 @@ fn smoke(out: &Path, frames: u32, encoder: Option<&str>, page: Option<&Path>) ->
 
     let mut seen = HashSet::new();
     let started = std::time::Instant::now();
-    karkataka_engine::render(&html, WIDTH, HEIGHT, frames, |n, bgra| {
+    let job = karkataka_engine::Job { html: &html, width: WIDTH, height: HEIGHT, frames, workers, gpu };
+    karkataka_engine::render(&job, |n, bgra| {
         match decode_frame_number(bgra) {
             Some(decoded) if decoded == n => {}
             Some(decoded) => return Err(format!("frame {n}: captured pixels show frame {decoded} (out of order)")),
@@ -161,6 +193,9 @@ fn smoke(out: &Path, frames: u32, encoder: Option<&str>, page: Option<&Path>) ->
         "png": png_path,
         "mp4": mp4_path,
         "encoder": encoder,
+        "workers": workers,
+        "workers_why": why,
+        "gpu": gpu,
         "render_fps": (frames as f64 / render_secs * 10.0).round() / 10.0,
     }))
 }

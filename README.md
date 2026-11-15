@@ -169,7 +169,7 @@ Build with `CEF_PATH` set, as for the CLI. `render` loads a page, steps every fr
 use karkataka_encode::{Encoder, default_h264_encoder};
 
 fn main() -> Result<(), String> {
-    // CEF relaunches this executable for its own processes. Handle that first, before anything else.
+    // CEF and the render workers relaunch this executable. Handle that first, before anything else.
     if let Some(code) = karkataka_engine::run_subprocess() {
         std::process::exit(code);
     }
@@ -178,7 +178,11 @@ fn main() -> Result<(), String> {
 <script>window.__setFrame = (n) => { document.getElementById("n").textContent = n; };</script>"#;
 
     let mut video = Encoder::spawn("out.mp4".as_ref(), 1080, 1920, 30, default_h264_encoder())?;
-    karkataka_engine::render(html, 1080, 1920, 300, |_frame, bgra| video.write_frame(bgra))?;
+    // probe::plan picks the worker count from cores and free memory; workers > 1 renders in
+    // parallel processes (frames still arrive in order). gpu: false paints on the CPU.
+    let workers = karkataka_engine::probe::plan(&karkataka_engine::probe::probe(), 300).workers;
+    let job = karkataka_engine::Job { html, width: 1080, height: 1920, frames: 300, workers, gpu: true };
+    karkataka_engine::render(&job, |_frame, bgra| video.write_frame(bgra))?;
     video.finish()
 }
 ```
@@ -187,7 +191,7 @@ The page contract:
 
 - Define `window.__setFrame(n)`. It must draw frame `n` and nothing else, so the same `n` always gives the same picture.
 - If a frame needs to load something first, return a promise from `__setFrame`. The engine waits for it.
-- Frames arrive in order on a separate thread, so encoding overlaps rendering.
+- Frames arrive in order on a separate thread, so encoding overlaps rendering, even when several browsers render at once.
 
 On macOS a library user also needs the `.app` bundle with a helper binary. Copy `crates/cli/src/bin/karka_helper.rs` and `bundle-karka.rs`, and set `[package.metadata.cef.bundle] helper_name` in your `Cargo.toml`, as in `crates/cli/Cargo.toml`.
 
@@ -262,18 +266,23 @@ Add `--json` for machine-readable output.
 `bench/scene.html` is a 300-frame, 1080x1920 scene: a gradient, 24 rotating cards with shadows, a counter and a progress bar. A Remotion copy with the same pixels draws the same picture.
 
 ```bash
-target/bundle/karka.app/Contents/MacOS/karka smoke --page bench/scene.html --out out/bench
-npx remotion render <entry> KarkaBench out.mp4 --hardware-acceleration=if-possible   # in the Remotion project
+bench/run.sh "karka:--software" "karka:" "remotion:--hardware-acceleration=if-possible"
 ```
 
-Measured on an Apple M1 (8 GB), wall time from command to finished MP4, release build:
+`bench/run.sh` runs each setup 3 times and prints the wall time from command to finished MP4. It expects the Remotion copy of the scene in `REMOTION_DIR` (an entry point `src/karka-bench/index.ts` with a `KarkaBench` composition).
+
+Measured on an Apple M1 (8 GB), release build, 3 runs each:
 
 | Renderer | Setup | Time |
 |---|---|---|
-| Karkataka | 1 browser, VideoToolbox | 6.4–8.0 s |
-| Remotion 4.0.537 | 4 tabs (default), hardware encoding | 9.4–11.2 s |
-| Remotion 4.0.537 | 4 tabs (default), libx264 | 15.5–18.1 s |
-| Remotion 4.0.537 | 1 tab, libx264 | 17.7–18.1 s |
+| Karkataka | 1 browser, software painting (`--software`), VideoToolbox | **4.5–6.2 s** |
+| Karkataka | 1 browser, GPU painting, VideoToolbox | 6.4–6.7 s |
+| Remotion 4.0.537 | 4 tabs (default), hardware encoding | 9.4–10.1 s |
+| Remotion 4.0.537 | 4 tabs (default), libx264 | 11.5–11.8 s |
+
+Parallel workers (`--mode multi`, one browser process each) produce correct video but are slower on this machine: 2 workers took 7.3–8.3 s and 3 took 31–34 s in software mode. One render already keeps the M1 busy (multi-threaded painting, one hardware encoder, ~540 MB per browser on 8 GB of RAM), so more copies only add contention. Machines with more cores and memory may scale; that is not measured yet.
+
+**Modes.** `--mode auto` (the default) probes the machine before the render starts and picks the worker count: one worker per 4 performance cores (logical cores on Linux), per 600 MB of free memory and per 60 frames, whichever is smallest, at least 1. On the M1 that gives 1. `--mode single` forces one browser; `--mode multi` forces at least 2 (`--workers N` sets the count). The JSON result's `workers_why` says how the count was chosen.
 
 ### Day-to-day commands
 
