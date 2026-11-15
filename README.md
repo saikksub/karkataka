@@ -109,6 +109,21 @@ examples/
 - FFmpeg (for the fallback encoder and muxing)
 - Optional: NVIDIA, Intel or AMD GPU with hardware encoding support
 
+## Development
+
+```bash
+git clone https://github.com/xploray/karkataka
+cd karkataka
+pnpm install          # install JS dependencies
+
+cargo build           # build all Rust crates
+cargo run -p karka    # run the CLI
+cargo test            # run Rust tests
+pnpm typecheck        # typecheck all TypeScript packages
+```
+
+The repo is two workspaces side by side: a Cargo workspace (`crates/*`) and a pnpm workspace (`packages/*`, `examples/*`).
+
 ## Roadmap
 
 - [ ] Engine: load a page in CEF, step 300 frames, encode with NVENC
