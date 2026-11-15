@@ -1,3 +1,4 @@
+mod render;
 mod smoke;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -21,17 +22,21 @@ struct Cli {
 enum Command {
     /// Open the Studio web UI
     Studio,
-    /// Render a scene to a video file
+    /// Render a scene page to MP4. The page gets `window.__karka` (props, frames, fps, size)
+    /// and must define `__setFrame(n)`; @karkataka/runtime does both for you
     Render {
-        /// Scene id, e.g. quiz-12
-        scene: String,
-        #[arg(long, value_enum, default_value = "h264")]
-        codec: Codec,
-        /// Constant rate factor (lower is higher quality)
-        #[arg(long)]
-        crf: Option<u8>,
-        #[arg(long, default_value_t = 30)]
-        fps: u32,
+        /// Single-file HTML page, e.g. a built scene: examples/c-quiz/dist/index.html
+        page: PathBuf,
+        /// Output video file
+        #[arg(long, default_value = "out/render.mp4")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 300)]
+        frames: u32,
+        /// Scene props as a JSON object, e.g. '{"question": "..."}'
+        #[arg(long, default_value = "{}")]
+        props: String,
+        #[command(flatten)]
+        engine: EngineArgs,
     },
     /// Export one frame of a scene as PNG
     Still {
@@ -47,24 +52,31 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value_t = 300)]
         frames: u32,
-        /// ffmpeg video encoder [default: h264_nvenc, h264_videotoolbox on macOS]
-        #[arg(long)]
-        encoder: Option<String>,
         /// HTML page to render instead of the built-in one. It must define `__setFrame(n)`
         /// and draw the same frame-number cells (see crates/cli/src/smoke.html)
         #[arg(long)]
         page: Option<PathBuf>,
-        /// auto: probe cores and free memory and pick single or multi before starting.
-        /// single: one browser in this process. multi: several browsers, one process each
-        #[arg(long, value_enum, default_value = "auto")]
-        mode: Mode,
-        /// Worker count for multi mode [default: what the probe allows, at least 2]
-        #[arg(long)]
-        workers: Option<u32>,
-        /// Paint on the CPU instead of the GPU
-        #[arg(long)]
-        software: bool,
+        #[command(flatten)]
+        engine: EngineArgs,
     },
+}
+
+/// How to run the browser and encoder, shared by `smoke` and `render`.
+#[derive(clap::Args)]
+struct EngineArgs {
+    /// ffmpeg video encoder [default: h264_nvenc, h264_videotoolbox on macOS]
+    #[arg(long)]
+    encoder: Option<String>,
+    /// auto: probe cores and free memory and pick single or multi before starting.
+    /// single: one browser in this process. multi: several browsers, one process each
+    #[arg(long, value_enum, default_value = "auto")]
+    mode: Mode,
+    /// Worker count for multi mode [default: what the probe allows, at least 2]
+    #[arg(long)]
+    workers: Option<u32>,
+    /// Paint on the CPU instead of the GPU
+    #[arg(long)]
+    software: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -72,15 +84,6 @@ enum Mode {
     Auto,
     Single,
     Multi,
-}
-
-#[derive(Clone, ValueEnum)]
-enum Codec {
-    H264,
-    H265,
-    Av1,
-    Vp9,
-    Prores,
 }
 
 fn main() -> ExitCode {
@@ -92,21 +95,30 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Studio => Err("`karka studio` is not implemented yet".to_string()),
-        Command::Render { .. } => Err("`karka render` is not implemented yet".to_string()),
-        Command::Still { .. } => Err("`karka still` is not implemented yet".to_string()),
-        Command::Smoke { out, frames, encoder, page, mode, workers, software } => {
-            choose_workers(mode, workers, frames, || probe::plan(&probe::probe(), frames)).and_then(|(workers, why)| {
-                smoke::run(smoke::Options {
-                    out: &out,
-                    frames,
-                    encoder: encoder.as_deref(),
-                    page: page.as_deref(),
-                    workers,
-                    workers_why: why,
-                    gpu: !software,
-                })
+        Command::Render { page, out, frames, props, engine } => engine.workers(frames).and_then(|(workers, why)| {
+            render::run(render::Options {
+                page: &page,
+                out: &out,
+                frames,
+                props: &props,
+                encoder: engine.encoder.as_deref(),
+                workers,
+                workers_why: why,
+                gpu: !engine.software,
             })
-        }
+        }),
+        Command::Still { .. } => Err("`karka still` is not implemented yet".to_string()),
+        Command::Smoke { out, frames, page, engine } => engine.workers(frames).and_then(|(workers, why)| {
+            smoke::run(smoke::Options {
+                out: &out,
+                frames,
+                encoder: engine.encoder.as_deref(),
+                page: page.as_deref(),
+                workers,
+                workers_why: why,
+                gpu: !engine.software,
+            })
+        }),
     };
     match result {
         Ok(value) => {
@@ -125,6 +137,12 @@ fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+impl EngineArgs {
+    fn workers(&self, frames: u32) -> Result<(u32, String), String> {
+        choose_workers(self.mode, self.workers, frames, || probe::plan(&probe::probe(), frames))
     }
 }
 

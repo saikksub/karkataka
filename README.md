@@ -2,7 +2,7 @@
 
 Write video scenes as web pages. Render them to MP4 with a Rust engine that drives Chromium offscreen and encodes on the GPU.
 
-> **Status: early development.** The engine works: it renders any web page frame by frame and encodes it to MP4, about 2x faster than Remotion on our benchmark. `karka render`, `karka still`, the Studio and the TypeScript runtime are not built yet. See [Roadmap](#roadmap).
+> **Status: early development.** The engine works: it renders any web page frame by frame and encodes it to MP4, about 2x faster than Remotion on our benchmark. `karka render` renders scenes written in SolidJS with `@karkataka/runtime`. `karka still` and the Studio are not built yet. See [Roadmap](#roadmap).
 
 ## Contents
 
@@ -10,10 +10,11 @@ Write video scenes as web pages. Render them to MP4 with a Rust engine that driv
 2. [Build and test](#build-and-test)
 3. [Benchmark against Remotion](#benchmark-against-remotion)
 4. [Using karka](#using-karka)
-5. [How it works](#how-it-works)
-6. [Use the engine as a library](#use-the-engine-as-a-library)
-7. [Project layout](#project-layout)
-8. [Roadmap](#roadmap)
+5. [Writing a scene](#writing-a-scene)
+6. [How it works](#how-it-works)
+7. [Use the engine as a library](#use-the-engine-as-a-library)
+8. [Project layout](#project-layout)
+9. [Roadmap](#roadmap)
 
 ## Setup
 
@@ -56,6 +57,8 @@ Do this after every code change.
 
 ```bash
 cargo test
+pnpm test        # runtime and the c-quiz scene (Vitest, jsdom)
+pnpm typecheck
 ```
 
 **2. Build a release binary.** On macOS, also copy it into the app bundle, because the scene tests and benchmarks run the app. Delete each old file before copying; copying over it makes macOS kill the app on launch (exit code 137).
@@ -138,7 +141,22 @@ Each setup runs 3 times. Results on an Apple M1 with 8 GB:
 
 ## Using karka
 
-Only `karka smoke` works today. It renders a page, checks every frame and encodes an MP4.
+`karka render` renders a scene page to MP4:
+
+```bash
+karka render examples/c-quiz/dist/index.html --frames 450 --props "$(cat examples/c-quiz/props.json)" --out out/c-quiz.mp4
+```
+
+| Option | Meaning |
+|---|---|
+| `<page>` | A single-file HTML page, usually a built scene (see [Writing a scene](#writing-a-scene)). |
+| `--frames <n>` | Number of frames (default 300). The scene reads it, so it sets the video length. |
+| `--props <json>` | A JSON object the scene reads as its props (default `{}`). |
+| `--out <file>` | The video file (default `out/render.mp4`). |
+
+It also takes `--software`, `--mode`, `--workers` and `--encoder`, as below.
+
+`karka smoke` renders a page, checks every frame and encodes an MP4.
 
 ```bash
 karka smoke --page my-scene.html --out out --json
@@ -155,6 +173,32 @@ karka smoke --page my-scene.html --out out --json
 | `--json` | Print the result or error as JSON. The exit code is 0 on success. |
 
 More processes only help on machines with spare cores and memory. On an 8 GB M1, one is fastest, and `auto` picks one.
+
+## Writing a scene
+
+Scenes are SolidJS components using `@karkataka/runtime`. `examples/c-quiz` is a complete one: a C quiz short with code, four options, a countdown and the answer.
+
+```bash
+pnpm --filter c-quiz build     # writes examples/c-quiz/dist/index.html, everything inlined
+```
+
+| Runtime export | What it does |
+|---|---|
+| `useFrame()` | The current frame, as a Solid accessor, counted from the start of the enclosing `Sequence`. |
+| `<Sequence from duration>` | Shows its children from frame `from` for `duration` frames (default: to the end). Inside, `useFrame()` starts at 0. Sequences nest. |
+| `interpolate(x, [0, 10], [0, 1], { easing, clamp })` | Piecewise linear mapping. Clamps to the end values unless `clamp: false`. |
+| `spring({ frame, fps, from, to, stiffness, damping, mass })` | A spring released at rest at frame 0. Computed exactly, so any frame renders on its own. Before frame 0 it stays at `from`, so `frame: f() - 20` delays it 20 frames. |
+| `config` | `props`, `frames`, `fps`, `width` and `height`, from the `karka render` options. In a plain browser: `{}`, 300, 30, 1080, 1920. |
+| `getProps(defaults)` | `defaults`, overridden by `--props`. |
+| `<SafeArea>` | The Instagram Reels safe zone of the 1080x1920 frame. Put everything the viewer must read inside it; only full-bleed backgrounds go outside. |
+
+Rules for scenes:
+
+- Build to one HTML file (the example uses `vite-plugin-singlefile`): the engine loads the page as a single string, with no file access.
+- Size `html` and `body` in px (`1080px` x `1920px`), not `vh`: the engine's hidden marker row makes the view 1 px taller.
+- Draw only from the frame and props. No `Date.now()`, `Math.random()` or timers: the same frame must always give the same picture.
+
+`karka render` appends `<script>window.__karka = {...}</script>` to the page, so module scripts (which run after parsing) see it at startup. The runtime defines `window.__setFrame`.
 
 ## How it works
 
@@ -215,7 +259,11 @@ crates/
     probe.rs       Picks the number of processes for this machine
   encode/        Pipes frames into FFmpeg
   media/         Video decoding and audio mixing (empty for now)
-  cli/           The karka command (main.rs: options; smoke.rs: the smoke test)
+  cli/           The karka command (main.rs: options; render.rs: karka render; smoke.rs: the smoke test)
+packages/
+  runtime/       @karkataka/runtime: useFrame, Sequence, interpolate, spring, SafeArea (SolidJS)
+examples/
+  c-quiz/        A C quiz short: code, options, countdown, answer
 bench/           Benchmark against Remotion
 tests/scenes/    Animation scenes rendered in every mode
 scripts/         fetch-cef.sh
@@ -226,8 +274,10 @@ next-action-item.md   What we are doing next, and what is blocked
 
 - [x] Engine: render a page frame by frame and encode to MP4 (`karka smoke`)
 - [x] Several browser processes, with automatic choice of how many
-- [ ] `karka still` and `karka render`
-- [ ] TypeScript runtime: `useFrame`, `interpolate`, `Sequence`, `delayRender`
+- [x] `karka render` with props as JSON
+- [x] SolidJS runtime: `useFrame`, `interpolate`, `spring`, `Sequence`
+- [ ] `karka still`
+- [ ] `delayRender` (wait for fonts, images and data before a frame)
 - [ ] Audio
 - [ ] Studio: preview, scrubber, props panel, render button
 - [ ] `<Video>` input with hardware decoding

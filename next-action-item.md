@@ -17,7 +17,7 @@ Rules for this file:
 
 1. **Choose the default painting mode.** Neither wins everywhere. In the scene tests (`tests/scenes/run.sh`, 2026-11-15), GPU painting was faster on `css-3d` (72 vs 36 fps) and `filters` (64 vs 47 fps), and CPU painting (`--software`) was faster on `dom-stress` (39 vs 22 fps) and the bench scene. Other scenes were close. Since 2026-11-15 `--software` disables only GPU compositing, so WebGL still works. Option: let auto mode pick per scene with a short trial render.
 2. **`karka still`.** Render one frame of a page and save it as PNG. Almost free with the current engine.
-3. **`@karkataka/runtime` and `karka render`.** `useFrame`, `interpolate`, `Sequence`, `delayRender`, so real scenes can render. The scene root must be sized in px (not `vh`), because the engine's hidden marker row makes the view 1 px taller.
+3. **`delayRender` in the runtime.** `useFrame`, `interpolate`, `spring`, `Sequence`, `karka render --props` and the C quiz example are done (2026-11-15). Scenes that load web fonts, images or data need a way to make `__setFrame` wait.
 4. **Profile the per-frame cost.** Find how much time goes to the ~3 copies per frame and ffmpeg's CPU BGRA-to-YUV conversion before optimising them.
 5. **Fix the cef crate's CEF download upstream.** Its index download fails because the CDN's index.json is over the 10 MB limit. A fix in tauri-apps/cef-rs would let us drop `scripts/fetch-cef.sh` and the `CEF_VERSION` install step.
 6. **CI on Linux and macOS** running `cargo test` and `tests/scenes/run.sh`. The Linux path has never run.

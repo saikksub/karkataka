@@ -53,7 +53,7 @@ expect_error smoke --frames 5 --out "$out/e" --mode single --workers 2
 expect_error smoke --frames 5 --out "$out/e" --mode multi --workers 0
 expect_error smoke --frames 5 --out "$out/e" --page "$out/missing.html"
 expect_error smoke --frames 5 --out /dev/null/out
-for command in studio "render x" "still x"; do
+for command in studio "still x"; do
   # shellcheck disable=SC2086
   expect_error $command
 done
@@ -68,6 +68,17 @@ expect_error smoke --frames 3 --out "$out/e" --page "$out/no-set-frame.html"
 expect_error smoke --frames 4 --out "$out/e" --page "$out/no-set-frame.html" --mode multi --workers 2
 expect_error smoke --frames 5 --out "$out/e" --page "$out/no-cells.html"
 expect_error smoke --frames 5 --out "$out/e" --page "$out/no-cells.html" --mode multi --workers 2
+# karka render: props reach the page intact (it only defines __setFrame when they do).
+# A module script, like a built scene: it runs after the config script karka appends.
+printf '<script type="module">if (window.__karka?.props.s === "<\\/script>" && window.__karka.frames === 2) window.__setFrame = () => {};</script>' > "$out/props.html"
+"$KARKA" render "$out/props.html" --frames 2 --props '{"s": "</script>"}' --out "$out/r/props.mp4" --json | grep -q '"ok":true'
+echo "render with props ok"
+expect_error render "$out/missing.html" --out "$out/r/x.mp4"
+expect_error render "$out/props.html" --props '{' --out "$out/r/x.mp4"
+expect_error render "$out/props.html" --out /dev/null/x.mp4
+expect_error render "$out/props.html" --frames 2 --mode single --workers 2
+expect_error render "$out/props.html" --frames 2 --out "$out/r/x.mp4" --encoder no-such-encoder
+expect_error render "$out/no-set-frame.html" --frames 1 --out "$out/r/x.mp4"
 # A relative TMPDIR still gives each process its own CEF profile.
 TMPDIR=relative-tmp "$KARKA" smoke --frames 2 --out "$out/e" --json | grep -q '"ok":true'
 echo "relative TMPDIR ok"

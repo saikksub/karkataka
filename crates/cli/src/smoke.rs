@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub const WIDTH: u32 = 1080;
 pub const HEIGHT: u32 = 1920;
-const FPS: u32 = 30;
+pub const FPS: u32 = 30;
 
 /// The page draws frame `n` as 16 black/white cells (bit i = cell i) so each capture can be checked.
 const SMOKE_PAGE: &str = include_str!("smoke.html");
