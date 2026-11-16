@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "tracks": [
+    {
+      "id": "main",
+      "clips": [
+        {
+          "type": "component",
+          "component": "scenes/Quiz.tsx",
+          "duration": 450,
+          "props": {
+            "number": 12,
+            "question": "What does this print?",
+            "code": "#include <stdio.h>\n#include <string.h>\n\nint main(void) {\n  char s[] = \"karka\";\n  printf(\"%zu %zu\", sizeof s, strlen(s));\n  return 0;\n}",
+            "options": [
+              "5 5",
+              "6 5",
+              "5 6",
+              "8 5"
+            ],
+            "answer": 1,
+            "explanation": "sizeof counts the closing '\\0'. strlen does not."
+          },
+          "id": "component-1",
+          "start": 0
+        }
+      ],
+      "name": "Quiz"
+    }
+  ]
+}

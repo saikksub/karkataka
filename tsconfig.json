@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "solid-js": ["./.karka/types/solid-js/types/index.d.ts"],
+      "solid-js/web": ["./.karka/types/solid-js/web/types/index.d.ts"],
+      "solid-js/store": ["./.karka/types/solid-js/store/types/index.d.ts"],
+      "solid-js/jsx-runtime": ["./.karka/types/solid-js/types/jsx.d.ts"],
+      "@karkataka/runtime": ["./.karka/types/runtime/index.d.ts"],
+      "csstype": ["./.karka/types/csstype/index.d.ts"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["out", ".karka", "media"]
+}

@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "tracks": [
+    {
+      "id": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "src": "media/clip.mp4",
+          "trim": 30,
+          "duration": 40,
+          "id": "video-1",
+          "start": 0
+        },
+        {
+          "type": "video",
+          "src": "media/clip.mp4",
+          "trim": 70,
+          "duration": 50,
+          "id": "video-2",
+          "start": 40
+        }
+      ],
+      "name": "Video"
+    },
+    {
+      "id": "V2",
+      "clips": [
+        {
+          "type": "image",
+          "src": "media/logo.png",
+          "start": 20,
+          "duration": 40,
+          "box": {
+            "x": 1500,
+            "y": 60,
+            "width": 360,
+            "height": 360
+          },
+          "fit": "contain",
+          "id": "image-1"
+        },
+        {
+          "type": "text",
+          "text": "The title",
+          "start": 60,
+          "duration": 30,
+          "style": {
+            "fontSize": 120,
+            "color": "white"
+          },
+          "fadeIn": 10,
+          "id": "text-1"
+        }
+      ],
+      "name": "Overlays"
+    },
+    {
+      "id": "A1",
+      "clips": [
+        {
+          "type": "audio",
+          "src": "media/music.wav",
+          "duration": 90,
+          "volume": 0.5,
+          "id": "audio-1",
+          "start": 0
+        }
+      ],
+      "name": "Music"
+    }
+  ]
+}

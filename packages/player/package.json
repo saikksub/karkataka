@@ -1,0 +1,17 @@
+{
+  "name": "@karkataka/player",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/types.ts",
+    "./project": "./src/project.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@karkataka/runtime": "workspace:*",
+    "solid-js": "^1.9.19"
+  }
+}

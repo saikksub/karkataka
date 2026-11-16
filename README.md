@@ -1,23 +1,51 @@
 # Karkataka
 
-Write video scenes as web pages. Render them to MP4 with a Rust engine that drives Chromium offscreen and encodes on the GPU.
+Video editing from the command line, for people and AI agents. A video is a **project folder**:
+- `project.json` holds the tracks and clips (video, images, audio, text, colors, and your scenes);
+- `scenes/*.tsx` are SolidJS components you write in any code editor.
 
-> **Status: early development.** The engine works: it renders any web page frame by frame and encodes it to MP4, about 2x faster than Remotion on our benchmark. `karka render`, `karka still`, the Studio and the TypeScript runtime are not built yet. See [Roadmap](#roadmap).
+`karka` makes projects, edits them, checks them, shows single frames, and renders MP4s with sound. It also serves the **Studio**, a browser editor with a preview and a timeline.
+
+`karka` is one Rust binary. It renders with offscreen Chromium and encodes on the GPU, about 2x faster than Remotion on our benchmark. Your scenes compile inside that Chromium, so using karka needs no Node.js, npm or build step. You need FFmpeg.
+
+> **Status: early development.** Projects, scenes, stills, rendering (any size and frame rate, with sound) and the Studio work on macOS. Linux has never run. The crate is [on crates.io](https://crates.io/crates/karka) for [use as a library](#use-the-engine-as-a-library), but to use the `karka` command, build it from source as below: `cargo install karka` gives a binary that cannot start Chromium on macOS, because CEF only runs from inside an `.app`. See [Roadmap](#roadmap).
+
+## Getting started
+
+On macOS, with [Rust](https://rustup.rs) and [Homebrew](https://brew.sh) installed. This takes a few minutes, most of it downloading Chromium (about 135 MB) and building:
+
+```bash
+brew install ffmpeg
+git clone https://github.com/saikksub/karkataka && cd karkataka
+./scripts/fetch-cef.sh                       # Chromium for karka
+cargo run -p karka --bin bundle-karka        # builds target/bundle/karka.app
+alias karka=$PWD/target/bundle/karka.app/Contents/MacOS/karka
+
+karka new ~/my-video                          # a project with one scene
+karka render ~/my-video                       # ~/my-video/out/my-video.mp4
+karka studio ~/my-video                       # edit it at http://127.0.0.1:4000/
+```
+
+Then edit `scenes/Hello.tsx` in your code editor and watch the Studio update. [Setup](#setup) explains each step, and [Quick start](#quick-start) shows what to do next.
 
 ## Contents
 
 1. [Setup](#setup)
-2. [Build and test](#build-and-test)
-3. [Benchmark against Remotion](#benchmark-against-remotion)
-4. [Using karka](#using-karka)
-5. [How it works](#how-it-works)
-6. [Use the engine as a library](#use-the-engine-as-a-library)
-7. [Project layout](#project-layout)
-8. [Roadmap](#roadmap)
+2. [Quick start](#quick-start)
+3. [Projects](#projects)
+4. [Scenes](#scenes)
+5. [The karka command](#the-karka-command)
+6. [Studio](#studio)
+7. [Build and test](#build-and-test)
+8. [Benchmark against Remotion](#benchmark-against-remotion)
+9. [How it works](#how-it-works)
+10. [Use the engine as a library](#use-the-engine-as-a-library)
+11. [Project layout](#project-layout)
+12. [Roadmap](#roadmap)
 
 ## Setup
 
-Do this once. You need Rust (stable), Node.js with pnpm, and FFmpeg.
+Do this once. You need Rust (stable) and FFmpeg. Node.js and pnpm are needed only to work on Karkataka itself (see [Build and test](#build-and-test)).
 
 **1. Install FFmpeg.** Karkataka does not ship it. Every frame is piped into the `ffmpeg` command, so it must be on your `PATH`.
 
@@ -32,7 +60,6 @@ sudo apt install ffmpeg    # Debian / Ubuntu
 git clone https://github.com/saikksub/karkataka
 cd karkataka
 ./scripts/fetch-cef.sh
-pnpm install
 ```
 
 **3. macOS only: create the app bundle.** On macOS, CEF only runs from inside an `.app`. This creates `target/bundle/karka.app`:
@@ -48,15 +75,195 @@ target/bundle/karka.app/Contents/MacOS/karka smoke --out out    # macOS
 cargo run --release -p karka -- smoke --out out                  # Linux
 ```
 
+**5. Put `karka` on your PATH**, so the commands below work from anywhere:
+
+```bash
+alias karka=$PWD/target/bundle/karka.app/Contents/MacOS/karka    # macOS (add it to ~/.zshrc)
+```
+
+## Quick start
+
+```bash
+karka new my-video                 # project.json, scenes/Hello.tsx, media/, types for your editor
+cd my-video
+karka still . --frame 30           # look at frame 30: out/my-video-30.png
+karka render .                     # out/my-video.mp4
+karka studio .                     # open http://127.0.0.1:4000/ in a browser
+```
+
+Open the folder in your editor (VS Code, Zed, Cursor, ...). `scenes/Hello.tsx` is a SolidJS component: change it, and the Studio's preview updates. `karka new` also writes a `tsconfig.json` and type declarations in `.karka/types/`, so the editor completes and checks scene code without an `npm install`.
+
+Add more:
+
+```bash
+karka scene . Intro                                     # scenes/Intro.tsx and a clip after Hello
+karka add-track . --id V0 --index 0                     # a track under the others
+karka add . --track V0 type=video src=media/clip.mp4    # your footage; no duration: the rest of the file
+karka add-track . --id T1                               # a track on top
+karka add . --track T1 type=text text="Hello" start=30 duration=60 style.fontSize=96 fadeIn=10
+karka validate .
+```
+
+Every command takes `--json` and then prints one JSON object, which is how agents use karka. A mistake is refused with the reason, and the file is left alone:
+
+```json
+{"ok":false,"error":"tracks[1] clips \"image-1\" (frames 20–59) and \"color-1\" (from 50) overlap; move one or put it on another track","problems":[...]}
+```
+
+Examples: `examples/edit/` is a 16:9 edit of footage, a logo, a title and music (`./make-media.sh` makes its media). `examples/c-quiz/` is a 9:16 quiz short, made of one scene clip.
+
+## Projects
+
+A project folder holds `project.json`; its paths are relative to that folder. Times are in frames at the project's fps.
+
+```json
+{
+  "version": 1,
+  "width": 1920, "height": 1080, "fps": 30,
+  "duration": 300,
+  "background": "#000",
+  "tracks": [
+    { "id": "V1", "name": "Video", "clips": [
+      { "id": "video-1", "type": "video", "src": "media/clip.mp4", "start": 0, "duration": 120, "trim": 30, "volume": 1 }
+    ] },
+    { "id": "T1", "hidden": false, "muted": false, "clips": [
+      { "id": "intro", "type": "component", "component": "scenes/Intro.tsx", "start": 0, "duration": 90, "props": { "title": "Hello" } }
+    ] }
+  ]
+}
+```
+
+- **Size and frame rate:** `width` and `height` are even, and the width is at least 72 px; `fps` is 1 to 240. Any aspect ratio works.
+- **Length:** `duration` in frames. Leave it out to end where the last clip ends. At most 65536 frames per render.
+- **Tracks:** track 0 is the bottom layer, and later tracks draw over it. Clips on one track must not overlap: put overlapping clips on another track. `hidden` hides a track's pictures, and `muted` silences its sound.
+
+**Clips.** Every clip has an `id` (unique; made for you when you leave it out), a `type`, `start` (first frame) and `duration` (frames). Pictures also take:
+- `box`: `{x, y, width, height}` in px; the default is the whole frame;
+- `opacity`, from 0 to 1;
+- `fadeIn` and `fadeOut`, in frames.
+
+| Type | Fields | Notes |
+|---|---|---|
+| `video` | `src`, `trim`, `volume`, `fit` | `trim` skips that many source frames. Its sound plays unless the track is muted. Any format FFmpeg reads. |
+| `image` | `src`, `fit` | `fit` is `cover` (default), `contain` or `fill`. |
+| `audio` | `src`, `trim`, `volume` | Draws nothing. |
+| `text` | `text`, `style` | `style` takes `fontSize`, `fontFamily`, `fontWeight`, `color`, `background`, `align`, `verticalAlign`, `padding` and `lineHeight`. |
+| `color` | `color` | Any CSS color or gradient. |
+| `component` | `component`, `props` | A scene file and its props. See [Scenes](#scenes). |
+
+`karka fields` prints this list as JSON. `karka validate` lists every problem with its place, for example `tracks[0].clips[2] ("video-1").src file not found: ...`. Edits that would add a problem are refused.
+
+## Scenes
+
+A scene is a SolidJS component in a `.tsx` file: anything a web page can draw, animated frame by frame. A `component` clip shows it, with the clip's `props`, inside the clip's box, for the clip's duration. `karka scene <project> <Name>` writes one from a template.
+
+```tsx
+import { interpolate, useDuration, useFrame } from "@karkataka/runtime";
+
+/** Optional: how the Studio edits the props. */
+export const schema = { title: { type: "string", title: "Title" } };
+
+export default function Title(props: { title: string }) {
+  const f = useFrame(); // 0 at the clip's start
+  const length = useDuration(); // the clip's length in frames
+  return <h1 style={{ opacity: `${interpolate(f(), [0, 15, length - 15, length], [0, 1, 1, 0])}` }}>{props.title}</h1>;
+}
+```
+
+- **Imports:** a scene can import `solid-js`, `solid-js/web`, `solid-js/store`, `@karkataka/runtime`, and files in the project:
+  - other `.ts`/`.tsx`/`.js`/`.json` files are compiled with it;
+  - any other file imports as its URL (`import logo from "../media/logo.png"`).
+
+  Other npm packages are not available: karka compiles scenes itself, without a bundler.
+- **Only what is used is compiled:** the scene files on the timeline and what they import. Other code in the folder (tests, tool configs) is left alone.
+- **Errors:** a scene that does not compile, or that throws, stops `still` and `render` at once, with the compiler's message, file and line.
+- **The same picture every time:** draw only from the frame and the props. No `Date.now()`, `Math.random()` or timers.
+
+| `@karkataka/runtime` | What it does |
+|---|---|
+| `useFrame()` | The current frame, as a Solid accessor, counted from the start of the clip or enclosing `Sequence`. |
+| `useDuration()` | The length of the clip or enclosing `Sequence`, in frames. |
+| `<Sequence from duration>` | Shows its children from frame `from` for `duration` frames. Inside it, `useFrame()` starts at 0. Sequences nest. |
+| `interpolate(x, [0, 10], [0, 1], { easing, clamp })` | Piecewise linear mapping. It holds the end values unless `clamp: false`. |
+| `spring({ frame, fps, from, to, stiffness, damping, mass })` | A spring released at rest at frame 0. It is computed exactly, so any frame renders on its own. Before frame 0 it stays at `from`, so `frame: f() - 20` delays it 20 frames. |
+| `<Audio src start trim volume>` | Plays a sound from frame `start` until the clip or Sequence ends. `trim={[a, b]}` plays source frames `a` to `b`. A relative `src` is a file in the project folder. |
+| `waitFor(promise)` | Makes the current frame wait for an image, font or data before it is captured. |
+| `config` | `fps`, `width`, `height` and `frames` of the video. |
+| `<SafeArea>` | For 9:16 phone video: the Instagram Reels safe zone. Put what the viewer must read inside it. |
+
+## The karka command
+
+Paths can be a project folder or its `.json` file. Add `--json` to any command to get `{"ok": true, "result": ...}` or `{"ok": false, "error": "...", "problems"?: [...]}`; the exit code is 1 on failure.
+
+| Command | What it does |
+|---|---|
+| `new <dir> [--width --height --fps --background] [--empty] [--force]` | A project folder: `project.json` with a starter scene clip (none with `--empty`), `scenes/Hello.tsx`, `media/`, and editor types. The default is 1920x1080 at 30 fps. |
+| `scene <project> <Name> [--track] [--duration]` | `scenes/<Name>.tsx` from a template (kept if it exists) and a clip that shows it, after the track's last clip. |
+| `show <project>` | The project, its length and its problems. |
+| `validate <project>` | Fails with every problem, if there are any. |
+| `fields [type]` | The fields of each clip type and of the project. |
+| `probe <media> [--fps 30]` | Length (in seconds, and in frames at that fps), size, frame rate, and whether there is video, audio or a still image. |
+| `add-track <project> [--id] [--name] [--index]` | A new track, on top unless `--index` says where. |
+| `add <project> --track <id> type=<type> key=value...` | A new clip. With no `start`, it goes after the track's last clip. A video or audio clip with no `duration` gets the rest of the file. |
+| `set <project> <clip\|track\|project> key=value...` | Change fields. Objects (`style`, `box`, `props`) are merged; `key=null` removes a field. |
+| `move <project> <clip> [--start <frame>] [--track <id>]` | Move a clip in time, to another track, or both. |
+| `split <project> <clip> --at <frame>` | Cut a clip in two. The second part carries on in the source. |
+| `remove <project> <clip\|track>` | Remove a clip, or a track with its clips. |
+| `still <project> [--frame 0] [--out]` | One frame as PNG (default `out/<name>-<frame>.png` in the project). |
+| `render <project> [--out] [--progress]` | The MP4, with sound (default `out/<name>.mp4`). `--progress` prints `{"frame": n, "frames": total}` lines to stderr. |
+| `studio <project> [--port 4000]` | The Studio, at `http://127.0.0.1:4000/`. |
+| `smoke [--page] [--frames] [--out]` | The engine self-test: renders a 1080x1920 page, checks every frame, and writes `frame0.png` and `smoke.mp4`. |
+
+Values in `key=value` are JSON when they parse as JSON (`30`, `true`, `null`, `{"x":0}`), and text otherwise. A text field keeps what was typed, so `text=2024` stays text. Dotted keys set nested fields: `style.fontSize=96`, `props.title="..."`.
+
+`still`, `render` and `smoke` take `--software`, which paints on the CPU (faster for most videos; the GPU is faster for 3D transforms and filters). `render` and `smoke` also take:
+- `--mode auto|single|multi`: `auto` (default) picks the number of browser processes from the CPU cores and free memory;
+- `--workers N`: the number of processes in `multi` mode;
+- `--encoder <name>`: the FFmpeg encoder. The default is `h264_videotoolbox` on macOS and `h264_nvenc` elsewhere; `libx264` encodes on the CPU.
+
+**Plain web pages.** `still` and `render` also take an `.html` page instead of a project, with `--frames`, `--props <json>`, `--width`, `--height` and `--fps`. karka adds `window.__karka = {props, frames, fps, width, height}` to the page. The page must define `window.__setFrame(n)`, which draws frame `n` and returns a promise if it has to wait.
+
+## Studio
+
+`karka studio <project>` serves the Studio for a project from the binary. Open the address it prints. It edits the same `project.json`, through the same rules as the CLI.
+
+- **Preview.** It draws the project with the same player that renders it, and compiles your scenes the same way. Save a scene file in your editor and the preview reloads, staying on the same frame. The preview seeks the video files; a render uses exact frames cut by FFmpeg.
+- **Timeline.**
+  - Tracks are shown top layer first, with hide (👁) and mute (♪) per track.
+  - Click or drag the ruler to seek. Click a clip to select it, and drag it to move it.
+  - Play/pause (Space), loop, step one or ten frames (← →, Shift), first/last frame (Home/End).
+  - Split the selected clip at the playhead (S) or delete it (⌫).
+  - Undo and redo (⌘Z, ⇧⌘Z).
+  - "Safe zone" (9:16 projects) outlines the Instagram Reels safe zone.
+- **Inspector.**
+  - With a clip selected: its fields. A scene's props get their own fields when it exports a `schema` (JSON Schema keywords: `type`, `title`, `description`, `enum`, `minimum`/`maximum`, plus `multiline`).
+  - With nothing selected: the project's settings, and buttons to add a track or a clip at the playhead.
+  - A refused edit says why. The project's problems (a missing file) are listed at the top.
+- **Live.** When something else changes `project.json`, such as an agent running `karka`, the Studio shows the change at once.
+- **Render.** The button renders with a progress bar, then plays `out/<name>.mp4`.
+
+`POST /api/quit` stops the Studio (as Ctrl+C does), for scripts.
+
 ## Build and test
 
-Do this after every code change.
+Do this after every code change. Working on Karkataka needs Node.js and pnpm as well: run `pnpm install` once.
 
 **1. Run the unit tests** (a few seconds):
 
 ```bash
 cargo test
+pnpm test        # runtime, compiler, Studio and the c-quiz scene (Vitest)
+pnpm typecheck
 ```
+
+**JavaScript built into karka.** The binary carries five pieces of JavaScript, built from `packages/`:
+- the compiler (Babel with the Solid preset);
+- solid-js;
+- the runtime;
+- the player;
+- the Studio.
+
+After changing any of them, rebuild with `pnpm assets` and commit `crates/karka/assets/`. That is what lets `cargo install` work without Node.
 
 **2. Build a release binary.** On macOS, also copy it into the app bundle, because the scene tests and benchmarks run the app. Delete each old file before copying; copying over it makes macOS kill the app on launch (exit code 137).
 
@@ -114,7 +321,14 @@ scripts/coverage.sh          # summary table
 scripts/coverage.sh --html   # also writes target/coverage/html/index.html
 ```
 
-It runs the unit tests, real renders in every mode, and every error path it can trigger (bad options, missing or failing ffmpeg, broken pages, a damaged CEF framework, workers that fail), using an instrumented build in `target/coverage`, so your normal build and app are not touched. It fails unless every line is covered. Last result: 100% of lines and functions, 99.5% of regions; the uncovered regions are failures the OS or CEF never report here, such as CEF failing to create a browser.
+It runs the unit tests, real renders in every mode, and every error path it can trigger (bad options, missing or failing ffmpeg, broken pages, a damaged CEF framework, workers that fail), using an instrumented build in `target/coverage`, so your normal build and app are not touched. It fails unless every line ran at least once (in a unit test or a real run) and every function ran, closures included. The real runs cover projects (every command, a scene that does not compile, a project with problems) and a `karka studio` session.
+
+**5. End-to-end tests** (about a minute). `edit.sh` works as an agent would. It builds a 16:9 edit from media using only `karka` commands, and checks that a mistake is refused. Then it looks at stills and renders. Its media are solid colours, so pixel checks prove frame-exact trimming, splitting, layering, boxes and the title. It also checks the size, length and sound of the MP4. `c-quiz.sh` renders the quiz project (its scene compiled inside karka's Chromium) with the GPU and with `--software`, and checks that each of its 11 sounds starts within 30 ms of its time.
+
+```bash
+tests/examples/edit.sh
+tests/examples/c-quiz.sh
+```
 
 To add a scene, add `tests/scenes/<name>.html`. It defines `window.scene = (n) => { ... }`, which draws frame `n` into `#stage` (it may return a promise), and calls `fail("why")` if it cannot run. The harness (`_head.html`, `_tail.html`) adds the frame-number cells.
 
@@ -136,104 +350,104 @@ Each setup runs 3 times. Results on an Apple M1 with 8 GB:
 | Remotion 4.0.537 | hardware encoding | 9.6–10.3 s |
 | Remotion 4.0.537 | default (libx264) | 11.5–11.8 s |
 
-## Using karka
-
-Only `karka smoke` works today. It renders a page, checks every frame and encodes an MP4.
-
-```bash
-karka smoke --page my-scene.html --out out --json
-```
-
-| Option | Meaning |
-|---|---|
-| `--page <file>` | Page to render. It must define `window.__setFrame(n)` and draw the frame-number cells (see `crates/cli/src/smoke.html`). Default: a built-in page. |
-| `--frames <n>` | Number of frames (default 300). |
-| `--out <dir>` | Where `frame0.png` and `smoke.mp4` go (default `out`). |
-| `--software` | Paint on the CPU instead of the GPU. Faster for most scenes; GPU is faster for 3D transforms and filters. |
-| `--mode auto\|single\|multi` | `auto` (default) checks CPU cores and free memory and picks the number of browser processes. `single` uses one browser. `multi` uses several, one process each (`--workers N` sets how many). |
-| `--encoder <name>` | FFmpeg encoder. Default: `h264_videotoolbox` on macOS, `h264_nvenc` elsewhere. `libx264` encodes on the CPU. |
-| `--json` | Print the result or error as JSON. The exit code is 0 on success. |
-
-More processes only help on machines with spare cores and memory. On an 8 GB M1, one is fastest, and `auto` picks one.
-
 ## How it works
 
-1. The engine loads the page in an offscreen Chromium (CEF) browser, 1080x1920.
-2. For each frame it calls `window.__setFrame(n)` in the page, and waits if that returns a promise.
-3. It asks Chromium to paint, and takes the pixels Chromium hands back (`OnPaint`). No screenshots, no PNG per frame.
+For `still` and `render`, karka first checks the project, and cuts each video clip into JPEG frames with FFmpeg (cached in `.karka/frames/`). It then writes one HTML page. That page holds:
+- the compiler, solid-js, the runtime and the player;
+- the project;
+- the project's scene files as source text.
+
+In the browser, the page compiles the scenes used by the project with Babel and points an import map at the compiled modules. Then the engine:
+
+1. Loads the page in an offscreen Chromium (CEF) browser, at the project's size, and waits for the scenes to compile. A compile error stops the render with the compiler's message.
+2. For each frame, calls `window.__setFrame(n)` in the page, and waits if that returns a promise.
+3. Asks Chromium to paint, and takes the pixels Chromium hands back (`OnPaint`). No screenshots, no PNG per frame.
 4. Chromium sometimes paints an older frame. So the engine draws the frame number into a hidden extra pixel row, and only accepts a paint whose row shows the frame it asked for.
-5. It pipes the pixels into FFmpeg, which encodes on the hardware encoder.
+5. Pipes the pixels into FFmpeg, which encodes on the hardware encoder.
+6. Before frame 0, the page lists its audio clips: video and audio clips, and `<Audio>` in scenes. After the frames, a second FFmpeg run trims, delays and mixes them and adds them to the file. The video stream is copied, not encoded again.
 
-A page must draw frame `n` the same way every time. To use CSS animations, pause them and seek them to the frame's time:
-
-```js
-window.__setFrame = (n) => {
-  for (const a of document.getAnimations()) { a.pause(); a.currentTime = n * 1000 / 30; }
-};
-```
+The player draws a video clip's frame as the matching JPEG, and waits until it has decoded. Every frame is therefore exact, and any format FFmpeg reads works, even ones Chromium cannot play.
 
 ## Use the engine as a library
 
-> Not on crates.io yet. Once published, it will be four crates: `karka` (the CLI), `karkataka-engine` (page in, raw frames out), `karkataka-encode` (frames into FFmpeg) and `karkataka-media` (planned).
+Add it with `cargo add karka` (see **Building it** below for CEF). It is one crate, [`karka`](https://crates.io/crates/karka), with the `karka` binary and these modules: `engine` (page in, raw frames out), `encode` (frames into FFmpeg), `audio` (mixing), `project` (the project format, its checks and edits), and `render`.
 
 ```rust
-use karkataka_encode::{Encoder, default_h264_encoder};
+use karka::encode::{Encoder, default_h264_encoder};
 
 fn main() -> Result<(), String> {
     // CEF and the render workers relaunch this executable. Handle that first.
-    if let Some(code) = karkataka_engine::run_subprocess() {
+    if let Some(code) = karka::engine::run_subprocess() {
         std::process::exit(code);
     }
 
     let html = r#"<div id="n" style="font-size:200px"></div>
 <script>window.__setFrame = (n) => { document.getElementById("n").textContent = n; };</script>"#;
+    // A page with local files (images, video frames) is loaded with karka::engine::file_url instead.
+    let url = karka::engine::data_url(html);
 
     let mut video = Encoder::spawn("out.mp4".as_ref(), 1080, 1920, 30, default_h264_encoder())?;
     // Let the engine pick how many browser processes this machine can run.
-    let workers = karkataka_engine::probe::plan(&karkataka_engine::probe::probe(), 300).workers;
-    let job = karkataka_engine::Job { html, width: 1080, height: 1920, frames: 300, workers, gpu: true };
-    karkataka_engine::render(&job, |_frame, bgra| video.write_frame(bgra))?;
+    let workers = karka::engine::probe::plan(&karka::engine::probe::probe(), 300).workers;
+    let job = karka::engine::Job { url: &url, width: 1080, height: 1920, frames: 300, workers, gpu: true };
+    karka::engine::render(&job, |_frame, bgra| video.write_frame(bgra))?;
     video.finish()
 }
 ```
 
-Frames arrive in order, as raw BGRA pixels, on a separate thread.
+Frames arrive in order, as raw BGRA pixels, on a separate thread. `render` returns the page's audio report, if it made one. `karka::engine::render_frame(&job, n)` renders only frame `n`.
 
-**Building it:** set `CEF_PATH` to a CEF folder from `scripts/fetch-cef.sh`. The `cef` crate's own download is broken right now. On Linux, also add that folder to `LD_LIBRARY_PATH`. On macOS your program must run from an `.app` bundle with a helper binary; copy `crates/cli/src/bin/karka_helper.rs`, `bundle-karka.rs` and the `[package.metadata.cef.bundle]` section of `crates/cli/Cargo.toml`.
+**Building it:** set `CEF_PATH` to a CEF folder from `scripts/fetch-cef.sh`. The `cef` crate's own download is broken right now. On Linux, also add that folder to `LD_LIBRARY_PATH`. On macOS your program must run from an `.app` bundle with a helper binary; copy `crates/karka/src/bin/karka_helper.rs`, `bundle-karka.rs` and the `[package.metadata.cef.bundle]` section of `crates/karka/Cargo.toml`.
 
-**Publishing (maintainers):** bump `version` in the root `Cargo.toml`, then with `CEF_PATH` set run `cargo publish -p` for `karkataka-encode`, `karkataka-media`, `karkataka-engine` and `karka`, in that order.
+**Publishing (maintainers):** run `pnpm assets` and commit the result, bump `version` in the root `Cargo.toml`, then with `CEF_PATH` set run `cargo publish -p karka`.
 
 ## Project layout
 
 ```
-crates/
-  engine/        Renders a page frame by frame
-    lib.rs         Public API: Job, render, run_subprocess
-    browser.rs     One offscreen browser and its frame loop
-    page.rs        The page URL and the hidden frame-number row
-    worker.rs      Rendering in several processes
-    probe.rs       Picks the number of processes for this machine
-  encode/        Pipes frames into FFmpeg
-  media/         Video decoding and audio mixing (empty for now)
-  cli/           The karka command (main.rs: options; smoke.rs: the smoke test)
-bench/           Benchmark against Remotion
-tests/scenes/    Animation scenes rendered in every mode
-scripts/         fetch-cef.sh
-next-action-item.md   What we are doing next, and what is blocked
+crates/karka/            The karka crate: one library and the karka binary
+  src/engine/              Renders a page frame by frame (browser, page, worker, probe)
+  src/encode.rs            Pipes frames into FFmpeg
+  src/audio.rs             Mixes audio clips into the video
+  src/project/             The project format (model), edits (ops), media (probe, frames), its page (page)
+  src/render.rs            Renders a page to MP4 or PNG
+  src/files.rs             File access with clear errors
+  src/cli/                 The commands: mod.rs (options), project.rs, new.rs, types.rs, studio.rs, smoke.rs
+  assets/                  JavaScript built into the binary (pnpm assets)
+packages/                For the built-in JavaScript (needs Node only to build)
+  runtime/                 @karkataka/runtime: useFrame, Sequence, Audio, waitFor, interpolate, spring, SafeArea
+  player/                  The SolidJS app that draws a project
+  compiler/                Compiles scenes in the page (Babel + Solid), and build-assets.ts
+  studio/                  The Studio app
+examples/
+  edit/                    A 16:9 edit: footage, logo, title, music (make-media.sh makes the media)
+  c-quiz/                  A 9:16 quiz short: one scene clip (scenes/Quiz.tsx)
+tests/scenes/            Animation pages rendered in every mode
+tests/examples/          End-to-end tests: edit.sh (an agent's workflow) and c-quiz.sh
+bench/                   Benchmark against Remotion
+scripts/                 fetch-cef.sh, coverage.sh
+next-action-item.md      What we are doing next, and what is blocked
 ```
 
 ## Roadmap
 
-- [x] Engine: render a page frame by frame and encode to MP4 (`karka smoke`)
-- [x] Several browser processes, with automatic choice of how many
-- [ ] `karka still` and `karka render`
-- [ ] TypeScript runtime: `useFrame`, `interpolate`, `Sequence`, `delayRender`
-- [ ] Audio
-- [ ] Studio: preview, scrubber, props panel, render button
-- [ ] `<Video>` input with hardware decoding
+- [x] Engine: render a page frame by frame and encode to MP4, in one or several browser processes
+- [x] Projects: tracks and clips (video, image, audio, text, color, scene), any size and frame rate
+- [x] One `karka` binary for people and agents: new, scene, edit, validate, probe, still, render, studio; JSON output
+- [x] Scenes in SolidJS, compiled inside karka (no Node), with editor types
+- [x] Audio mixed into the MP4: video sound, audio clips, `<Audio>` in scenes
+- [x] Studio: preview, multi-track timeline with drag, split and undo, inspector, live reload of scenes and of agent edits, render with progress
+- [x] On crates.io as `karka` (library)
+- [ ] Install without building: a prebuilt `karka.app` with CEF inside, then Homebrew
+- [ ] Keyframes: values that change over a clip (position, scale, volume) beyond fades
+- [ ] Transitions between clips, speed changes, trimming by dragging clip edges in the Studio
+- [ ] npm packages in scenes (karka compiles scenes without a bundler today)
 - [ ] GPU texture path (`OnAcceleratedPaint`), so frames skip the CPU copy
 
-**Known limits:** NVENC (`h264_nvenc`, the Linux default) and the whole Linux build have not run yet. Each CEF upgrade can break frame capture, so the CEF version is pinned.
+**Known limits:**
+- Studio previews have no sound.
+- Video clips are cut into JPEG frames before a render. This takes disk space (about 0.1–0.3 MB per 1080p frame, cached in `.karka/`).
+- NVENC (`h264_nvenc`, the Linux default) and the whole Linux build have not run yet.
+- Each CEF upgrade can break frame capture, so the CEF version is pinned.
 
 ## License
 

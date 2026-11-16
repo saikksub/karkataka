@@ -9,24 +9,25 @@ Rules for this file:
 
 ## Next action
 
-**`bundle-karka --release`.** The bundler builds debug binaries only, so every benchmark needs release binaries copied into `target/bundle/karka.app` by hand (deleting each old file first, or macOS kills it).
+**`bundle-karka --release`.** The bundler builds debug binaries only, so every benchmark and every real use needs release binaries copied into `target/bundle/karka.app` by hand (deleting each old file first, or macOS kills it). Since 2026-11-16 karka is one binary that people use directly, so this is also how they install it.
 
 - Done when: `cargo run -p karka --bin bundle-karka -- --release` builds a release `karka.app`, and `bench/run.sh "karka:--software"` runs against it with no manual copying.
 
 ## TBD
 
 1. **Choose the default painting mode.** Neither wins everywhere. In the scene tests (`tests/scenes/run.sh`, 2026-11-15), GPU painting was faster on `css-3d` (72 vs 36 fps) and `filters` (64 vs 47 fps), and CPU painting (`--software`) was faster on `dom-stress` (39 vs 22 fps) and the bench scene. Other scenes were close. Since 2026-11-15 `--software` disables only GPU compositing, so WebGL still works. Option: let auto mode pick per scene with a short trial render.
-2. **`karka still`.** Render one frame of a page and save it as PNG. Almost free with the current engine.
-3. **`@karkataka/runtime` and `karka render`.** `useFrame`, `interpolate`, `Sequence`, `delayRender`, so real scenes can render. The scene root must be sized in px (not `vh`), because the engine's hidden marker row makes the view 1 px taller.
-4. **Profile the per-frame cost.** Find how much time goes to the ~3 copies per frame and ffmpeg's CPU BGRA-to-YUV conversion before optimising them.
-5. **Fix the cef crate's CEF download upstream.** Its index download fails because the CDN's index.json is over the 10 MB limit. A fix in tauri-apps/cef-rs would let us drop `scripts/fetch-cef.sh` and the `CEF_VERSION` install step.
-6. **CI on Linux and macOS** running `cargo test` and `tests/scenes/run.sh`. The Linux path has never run.
-7. **CLI options** for fps, size and stall timeout (now fixed at 30 fps, 1080x1920, 10 s).
-8. **JSON progress lines** (`--json`) during long renders, so AI agents can follow progress.
-9. **`OnAcceleratedPaint` GPU path.** Frames go from Chromium to the encoder without a CPU copy. Only worth it after item 4.
-10. **Audio muxing.**
-11. **Studio.** Scrubber, props panel, render button.
-12. **Publish to crates.io.** Bump to 0.1.0 and publish in the order in the README.
+2. **Keyframes for clip fields** (position, scale, rotation, opacity, volume over time), so agents can animate without writing a component. Fades are the only change over a clip today (2026-11-16). This also gives audio fades and ducking.
+3. **Transitions and speed.** Cross-fades and wipes between clips on one track, and video speed (slow motion, fast forward). An agent can only cut or fade today.
+4. **Studio editing by hand:** trim by dragging clip edges, drag clips between tracks, zoom the timeline, and add media by dropping files. Today you move clips only within their track, and other changes go through the inspector.
+5. **Video frames without the JPEG cache.** Every video clip is cut into JPEGs before a render (0.1–0.3 MB per 1080p frame, in `.karka/frames/`, never cleaned). Stream decoded frames to the page instead, or at least clean old cache folders.
+6. **Profile the per-frame cost.** Find how much time goes to the ~3 copies per frame and ffmpeg's CPU BGRA-to-YUV conversion before optimising them.
+7. **Fix the cef crate's CEF download upstream.** Its index download fails because the CDN's index.json is over the 10 MB limit. A fix in tauri-apps/cef-rs would let us drop `scripts/fetch-cef.sh` and the `CEF_VERSION` install step.
+8. **CI on Linux and macOS** running `cargo test` and `tests/scenes/run.sh`. The Linux path has never run.
+9. **JSON progress lines on stdout with `--json`.** `karka render --progress` prints them to stderr since 2026-11-15 (the Studio uses it); `smoke` has none.
+10. **`OnAcceleratedPaint` GPU path.** Frames go from Chromium to the encoder without a CPU copy. Only worth it after item 6 (profiling).
+11. **npm packages in scenes.** Scenes compile inside karka's Chromium with no bundler, so they can import only solid-js, the runtime and project files (2026-11-16). Option: let a project vendor ES modules into a folder that the import map serves.
+12. **Studio: audio in the preview, and cancelling a render.** The preview is silent, and a render stops only when the Studio tab closes (2026-11-15).
+13. **Install without building.** `karka` 0.0.0 is on crates.io since 2026-11-16, but `cargo install karka` cannot run on macOS (CEF needs an .app, and `bundle-karka` runs `cargo build` in the source checkout), and users still need `scripts/fetch-cef.sh` and `CEF_PATH`, which the crate does not ship. Ship a prebuilt release `karka.app` (zip on GitHub Releases, then a Homebrew tap) once `bundle-karka --release` exists (the next action).
 
 ## Bench
 

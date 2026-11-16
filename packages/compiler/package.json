@@ -1,0 +1,23 @@
+{
+  "name": "@karkataka/compiler",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "assets": "node build-assets.ts"
+  },
+  "devDependencies": {
+    "@babel/standalone": "^8.1.2",
+    "@karkataka/player": "workspace:*",
+    "@karkataka/runtime": "workspace:*",
+    "@karkataka/studio": "workspace:*",
+    "@types/babel__standalone": "^7.1.9",
+    "babel-preset-solid": "^1.9.19",
+    "solid-js": "^1.9.19",
+    "vite": "^8.3.8",
+    "vite-plugin-solid": "^2.11.16",
+    "vitest": "^5.1.0"
+  }
+}
