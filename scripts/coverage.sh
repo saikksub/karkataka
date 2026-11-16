@@ -71,14 +71,28 @@ expect_error smoke --frames 5 --out "$out/e" --page "$out/no-cells.html" --mode 
 # karka render: props reach the page intact (it only defines __setFrame when they do).
 # A module script, like a built scene: it runs after the config script karka appends.
 printf '<script type="module">if (window.__karka?.props.s === "<\\/script>" && window.__karka.frames === 2) window.__setFrame = () => {};</script>' > "$out/props.html"
-"$KARKA" render "$out/props.html" --frames 2 --props '{"s": "</script>"}' --out "$out/r/props.mp4" --json | grep -q '"ok":true'
-echo "render with props ok"
+mkdir -p "$out/r"
+"$KARKA" render "$out/props.html" --frames 2 --props '{"s": "</script>"}' --out "$out/r/props.mp4" --json --progress 2>"$out/r/progress.log" | grep -q '"ok":true'
+grep -qx '{"frame":2,"frames":2}' "$out/r/progress.log"
+echo "render with props and progress ok"
 expect_error render "$out/missing.html" --out "$out/r/x.mp4"
 expect_error render "$out/props.html" --props '{' --out "$out/r/x.mp4"
 expect_error render "$out/props.html" --out /dev/null/x.mp4
 expect_error render "$out/props.html" --frames 2 --mode single --workers 2
 expect_error render "$out/props.html" --frames 2 --out "$out/r/x.mp4" --encoder no-such-encoder
 expect_error render "$out/no-set-frame.html" --frames 1 --out "$out/r/x.mp4"
+# Audio: the page reports a clip (and logs something else, which must be left alone), in one
+# browser and through worker processes; a report that throws fails the render.
+ffmpeg -loglevel error -y -f lavfi -i sine=duration=1 "$out/tone.wav"
+printf '<script type="module">console.log("hello"); window.__setFrame = () => {}; window.__karkaReport = () => JSON.stringify({ audio: [{ src: "tone.wav", from: 0, to: null, skip: 0, volume: 1 }] });</script>' > "$out/audio.html"
+for mode in "--mode single" "--mode multi --workers 2"; do
+  # shellcheck disable=SC2086
+  "$KARKA" render "$out/audio.html" --frames 4 $mode --out "$out/r/audio.mp4" --json | grep -q '"audio_clips":1'
+  ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$out/r/audio.mp4" | grep -q audio
+  echo "render with audio ok: $mode"
+done
+printf '<script type="module">window.__setFrame = () => {}; window.__karkaReport = () => { throw new Error("no clips"); };</script>' > "$out/bad-report.html"
+expect_error render "$out/bad-report.html" --frames 2 --out "$out/r/x.mp4"
 # A relative TMPDIR still gives each process its own CEF profile.
 TMPDIR=relative-tmp "$KARKA" smoke --frames 2 --out "$out/e" --json | grep -q '"ok":true'
 echo "relative TMPDIR ok"

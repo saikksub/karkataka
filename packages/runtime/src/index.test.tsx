@@ -85,3 +85,111 @@ test("SafeArea sits on the Reels safe zone", () => {
   const { top, right, bottom, left } = (root.firstChild as HTMLElement).style;
   expect([top, right, bottom, left]).toEqual(["250px", "200px", "440px", "96px"]);
 });
+
+test("the report lists every Audio clip, with Sequence starts and ends applied", async () => {
+  vi.resetModules();
+  const { Audio, Sequence } = await import("./index.tsx");
+  const root = document.createElement("div");
+  const stop = render(
+    () => (
+      <>
+        <Audio src="music.mp3" volume={0.3} />
+        <Sequence from={100} duration={50}>
+          <Audio src="tick.wav" start={10} />
+          <Audio src="long.wav" trim={[30, 300]} />
+          <Audio src="short.wav" trim={[0, 20]} start={5} />
+        </Sequence>
+      </>
+    ),
+    root,
+  );
+  const report = JSON.parse(window.__karkaReport!());
+  stop();
+  expect(report.audio).toEqual([
+    { src: "music.mp3", from: 0, to: null, skip: 0, volume: 0.3 },
+    // Inside the Sequence: offset by its start, cut at its end (frame 150).
+    { src: "tick.wav", from: 110, to: 150, skip: 0, volume: 1 },
+    { src: "long.wav", from: 100, to: 150, skip: 30, volume: 1 },
+    { src: "short.wav", from: 105, to: 125, skip: 0, volume: 1 },
+  ]);
+});
+
+test("Audio: trim with only a start plays to the end; a remounted Sequence adds no duplicates; the report leaves frame 0", async () => {
+  vi.resetModules();
+  const { Audio, Sequence, useFrame } = await import("./index.tsx");
+  const root = document.createElement("div");
+  const Frame = () => {
+    const f = useFrame();
+    return <b>{f()}</b>;
+  };
+  const stop = render(
+    () => (
+      <>
+        <Frame />
+        <Audio src="bed.mp3" trim={[45]} volume={0.2} />
+        {/* Frame 12 below mounts the first inner Sequence; the report's walk mounts it again. */}
+        <Sequence from={0} duration={300}>
+          <Sequence from={10} duration={5}>
+            <Audio src="pop.wav" />
+          </Sequence>
+          <Sequence from={30} duration={5}>
+            <Audio src="pop.wav" start={2} />
+          </Sequence>
+        </Sequence>
+        {/* Starts after its Sequence ends: to <= from, which karka drops. */}
+        <Sequence from={50} duration={5}>
+          <Audio src="late.wav" start={8} />
+        </Sequence>
+      </>
+    ),
+    root,
+  );
+  window.__setFrame!(12);
+  const { audio } = JSON.parse(window.__karkaReport!());
+  expect(root.textContent).toBe("0");
+  stop();
+  expect(audio).toEqual([
+    { src: "bed.mp3", from: 0, to: null, skip: 45, volume: 0.2 },
+    { src: "pop.wav", from: 10, to: 15, skip: 0, volume: 1 },
+    { src: "pop.wav", from: 32, to: 35, skip: 0, volume: 1 },
+    { src: "late.wav", from: 58, to: 55, skip: 0, volume: 1 },
+  ]);
+});
+
+test("Audio inside a Sequence that is never shown (past the last frame) is not reported", async () => {
+  vi.resetModules();
+  const { Audio, Sequence, config } = await import("./index.tsx");
+  const stop = render(
+    () => (
+      <Sequence from={config.frames + 10}>
+        <Audio src="never.wav" />
+      </Sequence>
+    ),
+    document.createElement("div"),
+  );
+  expect(JSON.parse(window.__karkaReport!()).audio).toEqual([]);
+  stop();
+});
+
+test("outside karka, the Studio's ?karka= URL sets props and frames; bad JSON is ignored", async () => {
+  const load = async (search: string) => {
+    window.history.replaceState(null, "", `/${search}`);
+    vi.resetModules();
+    return (await import("./index.tsx")).config;
+  };
+  expect(await load(`?karka=${encodeURIComponent(JSON.stringify({ props: { a: 2 }, frames: 90 }))}`)).toEqual({
+    props: { a: 2 },
+    frames: 90,
+    fps: 30,
+    width: 1080,
+    height: 1920,
+  });
+  expect((await load("?karka=%7Bbroken")).frames).toBe(300);
+  window.history.replaceState(null, "", "/");
+});
+
+test("getProps tells the Studio the defaults and schema", () => {
+  const schema = { title: { type: "string" as const } };
+  getProps({ title: "x" }, schema);
+  expect(window.__karkaScene).toEqual({ defaults: { title: "x" }, schema });
+});

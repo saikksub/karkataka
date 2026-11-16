@@ -31,7 +31,8 @@ pub(crate) fn run_cef_subprocess() -> Option<i32> {
 }
 
 /// Render frames `first, first+step, ...` below `job.frames` with one browser in this process.
-pub(crate) fn render_in_process<F>(job: &Job, first: u32, step: u32, mut on_frame: F) -> Result<(), String>
+/// Returns the page's report, if it made one (see `page::REPORT_SCRIPT`).
+pub(crate) fn render_in_process<F>(job: &Job, first: u32, step: u32, mut on_frame: F) -> Result<Option<String>, String>
 where
     F: FnMut(u32, &[u8]) -> Result<(), String> + Send,
 {
@@ -105,11 +106,12 @@ struct State {
     last_progress: Instant,
     tx: Option<SyncSender<Frame>>,
     error: Option<String>,
+    report: Option<String>,
 }
 
 type Shared = Rc<RefCell<State>>;
 
-fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<(), String> {
+fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<Option<String>, String> {
     let state: Shared = Rc::new(RefCell::new(State {
         frames: job.frames,
         step,
@@ -123,6 +125,7 @@ fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<(), 
         last_progress: Instant::now(),
         tx: Some(tx),
         error: None,
+        report: None,
     }));
     let window_info = WindowInfo {
         windowless_rendering_enabled: 1,
@@ -135,6 +138,7 @@ fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<(), 
         KarkaRender::new(state.clone(), job.width as c_int, job.height as c_int + 1),
         KarkaLoad::new(state.clone(), job.height),
         KarkaLifeSpan::new(),
+        KarkaDisplay::new(state.clone()),
     );
     let url = page::data_url(job.html);
     let browser = browser_host_create_browser_sync(
@@ -158,7 +162,7 @@ fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<(), 
     match state.error.take() {
         Some(error) => Err(error),
         None if state.n < job.frames => Err(format!("stopped at frame {} of {}", state.n, job.frames)),
-        None => Ok(()),
+        None => Ok(state.report.take()),
     }
 }
 
@@ -416,6 +420,7 @@ wrap_load_handler! {
             if start {
                 self.state.borrow_mut().last_progress = Instant::now();
                 run_script(browser, &page::marker_script(self.height));
+                run_script(browser, page::REPORT_SCRIPT);
                 let first = self.state.borrow().n;
                 set_frame(&self.state, browser, first);
             }
@@ -433,11 +438,39 @@ wrap_life_span_handler! {
     }
 }
 
+wrap_display_handler! {
+    struct KarkaDisplay {
+        state: Shared,
+    }
+
+    impl DisplayHandler {
+        /// Picks the page's report out of its console messages; other messages are left alone.
+        fn on_console_message(
+            &self,
+            _browser: Option<&mut Browser>,
+            _level: LogSeverity,
+            message: Option<&CefString>,
+            _source: Option<&CefString>,
+            _line: c_int,
+        ) -> c_int {
+            let message = message.map(CefString::to_string).unwrap_or_default();
+            match message.strip_prefix(page::REPORT_PREFIX) {
+                Some(report) => {
+                    self.state.borrow_mut().report = Some(report.to_string());
+                    1
+                }
+                None => 0,
+            }
+        }
+    }
+}
+
 wrap_client! {
     struct KarkaClient {
         render: RenderHandler,
         load: LoadHandler,
         life_span: LifeSpanHandler,
+        display: DisplayHandler,
     }
 
     impl Client {
@@ -449,6 +482,9 @@ wrap_client! {
         }
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
             Some(self.life_span.clone())
+        }
+        fn display_handler(&self) -> Option<DisplayHandler> {
+            Some(self.display.clone())
         }
     }
 }

@@ -2,7 +2,7 @@
 
 Write video scenes as web pages. Render them to MP4 with a Rust engine that drives Chromium offscreen and encodes on the GPU.
 
-> **Status: early development.** The engine works: it renders any web page frame by frame and encodes it to MP4, about 2x faster than Remotion on our benchmark. `karka render` renders scenes written in SolidJS with `@karkataka/runtime`. `karka still` and the Studio are not built yet. See [Roadmap](#roadmap).
+> **Status: early development.** The engine works: it renders any web page frame by frame and encodes it to MP4, about 2x faster than Remotion on our benchmark. `karka render` renders scenes written in SolidJS with `@karkataka/runtime`, and the Studio previews, edits and renders them in the browser. `karka still` is not built yet. See [Roadmap](#roadmap).
 
 ## Contents
 
@@ -11,10 +11,11 @@ Write video scenes as web pages. Render them to MP4 with a Rust engine that driv
 3. [Benchmark against Remotion](#benchmark-against-remotion)
 4. [Using karka](#using-karka)
 5. [Writing a scene](#writing-a-scene)
-6. [How it works](#how-it-works)
-7. [Use the engine as a library](#use-the-engine-as-a-library)
-8. [Project layout](#project-layout)
-9. [Roadmap](#roadmap)
+6. [Studio](#studio)
+7. [How it works](#how-it-works)
+8. [Use the engine as a library](#use-the-engine-as-a-library)
+9. [Project layout](#project-layout)
+10. [Roadmap](#roadmap)
 
 ## Setup
 
@@ -57,7 +58,7 @@ Do this after every code change.
 
 ```bash
 cargo test
-pnpm test        # runtime and the c-quiz scene (Vitest, jsdom)
+pnpm test        # runtime, Studio and the c-quiz scene (Vitest)
 pnpm typecheck
 ```
 
@@ -119,6 +120,12 @@ scripts/coverage.sh --html   # also writes target/coverage/html/index.html
 
 It runs the unit tests, real renders in every mode, and every error path it can trigger (bad options, missing or failing ffmpeg, broken pages, a damaged CEF framework, workers that fail), using an instrumented build in `target/coverage`, so your normal build and app are not touched. It fails unless every line is covered. Last result: 100% of lines and functions, 99.5% of regions; the uncovered regions are failures the OS or CEF never report here, such as CEF failing to create a browser.
 
+**End-to-end example test** (about 30 seconds). Builds `examples/c-quiz`, renders it with one browser and with two worker processes, and checks every frame is there and every sound (10 timer ticks, the chime) starts within 30 ms of its time:
+
+```bash
+tests/examples/c-quiz.sh
+```
+
 To add a scene, add `tests/scenes/<name>.html`. It defines `window.scene = (n) => { ... }`, which draws frame `n` into `#stage` (it may return a promise), and calls `fail("why")` if it cannot run. The harness (`_head.html`, `_tail.html`) adds the frame-number cells.
 
 ## Benchmark against Remotion
@@ -153,6 +160,9 @@ karka render examples/c-quiz/dist/index.html --frames 450 --props "$(cat example
 | `--frames <n>` | Number of frames (default 300). The scene reads it, so it sets the video length. |
 | `--props <json>` | A JSON object the scene reads as its props (default `{}`). |
 | `--out <file>` | The video file (default `out/render.mp4`). |
+| `--progress` | Print `{"frame": <frames done>, "frames": <total>}` to stderr as each frame is done. |
+
+If the scene has `<Audio>` clips, karka mixes them and adds them to the MP4 as AAC after the frames are encoded. The result's `audio_clips` says how many it added.
 
 It also takes `--software`, `--mode`, `--workers` and `--encoder`, as below.
 
@@ -189,7 +199,8 @@ pnpm --filter c-quiz build     # writes examples/c-quiz/dist/index.html, everyth
 | `interpolate(x, [0, 10], [0, 1], { easing, clamp })` | Piecewise linear mapping. Clamps to the end values unless `clamp: false`. |
 | `spring({ frame, fps, from, to, stiffness, damping, mass })` | A spring released at rest at frame 0. Computed exactly, so any frame renders on its own. Before frame 0 it stays at `from`, so `frame: f() - 20` delays it 20 frames. |
 | `config` | `props`, `frames`, `fps`, `width` and `height`, from the `karka render` options. In a plain browser: `{}`, 300, 30, 1080, 1920. |
-| `getProps(defaults)` | `defaults`, overridden by `--props`. |
+| `getProps(defaults, schema?)` | `defaults`, overridden by `--props` (or the Studio). `schema` tells the Studio's props panel how to edit each prop (see [Studio](#studio)). |
+| `<Audio src start trim volume>` | Plays a sound from frame `start` (relative to the enclosing `Sequence`) until that Sequence ends. `trim={[a, b]}` plays the source from its frame `a` to `b` (`b` optional), `volume` 1 is unchanged. A relative `src` is a file next to the built page: in Vite, put it in `public/`. Draws nothing. |
 | `<SafeArea>` | The Instagram Reels safe zone of the 1080x1920 frame. Put everything the viewer must read inside it; only full-bleed backgrounds go outside. |
 
 Rules for scenes:
@@ -198,7 +209,30 @@ Rules for scenes:
 - Size `html` and `body` in px (`1080px` x `1920px`), not `vh`: the engine's hidden marker row makes the view 1 px taller.
 - Draw only from the frame and props. No `Date.now()`, `Math.random()` or timers: the same frame must always give the same picture.
 
-`karka render` appends `<script>window.__karka = {...}</script>` to the page, so module scripts (which run after parsing) see it at startup. The runtime defines `window.__setFrame`.
+`karka render` appends `<script>window.__karka = {...}</script>` to the page, so module scripts (which run after parsing) see it at startup. The runtime defines `window.__setFrame`, and `window.__karkaReport()`, which the engine calls once after load: it shows every frame once (clips inside a `Sequence` only register while it shows) and returns the list of `<Audio>` clips.
+
+## Studio
+
+The Studio previews a scene, edits its props and renders it, in the browser. It runs inside the scene's own Vite dev server: add the plugin to `vite.config.ts` (the example already has it).
+
+```ts
+import { studio } from "@karkataka/studio";
+export default defineConfig({ plugins: [solid(), viteSingleFile(), studio()] });
+```
+
+```bash
+cd examples/c-quiz
+KARKA=../../target/bundle/karka.app/Contents/MacOS/karka pnpm dev   # then open http://localhost:5173/studio
+```
+
+`KARKA` is the karka binary the render button runs (default: `karka` on `PATH`).
+
+- **Preview with hot reload.** Edit the scene's code and the preview updates; the Studio keeps its frame and props.
+- **Timeline.** Scrubber, play/pause (Space), loop, step one frame (← →) or ten (Shift+← →), first/last (Home/End), and the frame count. "Safe zone" outlines the Instagram Reels safe zone.
+- **Props panel.** Built from the `schema` passed to `getProps`. Each prop takes JSON Schema keywords: `type` (`string`, `number`, `integer`, `boolean`, `array`), `title`, `description`, `enum` (a dropdown), `minimum`/`maximum`, and `multiline: true` for a text area. A list of strings gets one field per item; anything else is edited as JSON. Without a schema, the panel picks fields from the default values. Edits stay after a reload; "Reset" clears them.
+- **Render.** Builds the scene, runs `karka render` with the current props and frame count, shows a progress bar, then plays `out/studio.mp4`.
+
+Props reach the preview through its URL (`/?karka={"props":...,"frames":...}`), which the runtime reads when `karka render` has not set `window.__karka`.
 
 ## How it works
 
@@ -207,6 +241,7 @@ Rules for scenes:
 3. It asks Chromium to paint, and takes the pixels Chromium hands back (`OnPaint`). No screenshots, no PNG per frame.
 4. Chromium sometimes paints an older frame. So the engine draws the frame number into a hidden extra pixel row, and only accepts a paint whose row shows the frame it asked for.
 5. It pipes the pixels into FFmpeg, which encodes on the hardware encoder.
+6. If the page reported audio clips, a second FFmpeg run trims, delays and mixes them and adds them to the file. The video stream is copied, not encoded again.
 
 A page must draw frame `n` the same way every time. To use CSS animations, pause them and seek them to the frame's time:
 
@@ -218,7 +253,7 @@ window.__setFrame = (n) => {
 
 ## Use the engine as a library
 
-> Not on crates.io yet. Once published, it will be four crates: `karka` (the CLI), `karkataka-engine` (page in, raw frames out), `karkataka-encode` (frames into FFmpeg) and `karkataka-media` (planned).
+> Not on crates.io yet. Once published, it will be four crates: `karka` (the CLI), `karkataka-engine` (page in, raw frames out), `karkataka-encode` (frames into FFmpeg) and `karkataka-media` (audio mixing).
 
 ```rust
 use karkataka_encode::{Encoder, default_h264_encoder};
@@ -258,12 +293,13 @@ crates/
     worker.rs      Rendering in several processes
     probe.rs       Picks the number of processes for this machine
   encode/        Pipes frames into FFmpeg
-  media/         Video decoding and audio mixing (empty for now)
+  media/         Mixes audio clips and adds them to the video
   cli/           The karka command (main.rs: options; render.rs: karka render; smoke.rs: the smoke test)
 packages/
-  runtime/       @karkataka/runtime: useFrame, Sequence, interpolate, spring, SafeArea (SolidJS)
+  runtime/       @karkataka/runtime: useFrame, Sequence, Audio, interpolate, spring, SafeArea (SolidJS)
+  studio/        @karkataka/studio: the Studio, a Vite plugin (plugin.ts) and its UI (app/)
 examples/
-  c-quiz/        A C quiz short: code, options, countdown, answer
+  c-quiz/        A C quiz short: code, options, countdown with ticks, answer with a chime
 bench/           Benchmark against Remotion
 tests/scenes/    Animation scenes rendered in every mode
 scripts/         fetch-cef.sh
@@ -278,8 +314,8 @@ next-action-item.md   What we are doing next, and what is blocked
 - [x] SolidJS runtime: `useFrame`, `interpolate`, `spring`, `Sequence`
 - [ ] `karka still`
 - [ ] `delayRender` (wait for fonts, images and data before a frame)
-- [ ] Audio
-- [ ] Studio: preview, scrubber, props panel, render button
+- [x] Audio: `<Audio>` with start, trim and volume, mixed into the MP4
+- [x] Studio: preview with hot reload, timeline, props panel from a schema, render button with progress
 - [ ] `<Video>` input with hardware decoding
 - [ ] GPU texture path (`OnAcceleratedPaint`), so frames skip the CPU copy
 

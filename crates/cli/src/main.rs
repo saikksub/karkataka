@@ -20,7 +20,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the Studio web UI
+    /// How to open the Studio (it runs in the scene's Vite dev server)
     Studio,
     /// Render a scene page to MP4. The page gets `window.__karka` (props, frames, fps, size)
     /// and must define `__setFrame(n)`; @karkataka/runtime does both for you
@@ -35,6 +35,9 @@ enum Command {
         /// Scene props as a JSON object, e.g. '{"question": "..."}'
         #[arg(long, default_value = "{}")]
         props: String,
+        /// Print a JSON line to stderr as each frame is done: {"frame": <frames done>, "frames": <total>}
+        #[arg(long)]
+        progress: bool,
         #[command(flatten)]
         engine: EngineArgs,
     },
@@ -94,13 +97,14 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Studio => Err("`karka studio` is not implemented yet".to_string()),
-        Command::Render { page, out, frames, props, engine } => engine.workers(frames).and_then(|(workers, why)| {
+        Command::Studio => Err("the Studio runs in your scene's Vite dev server: add `studio()` from @karkataka/studio to its vite.config.ts, run `vite`, and open /studio".to_string()),
+        Command::Render { page, out, frames, props, progress, engine } => engine.workers(frames).and_then(|(workers, why)| {
             render::run(render::Options {
                 page: &page,
                 out: &out,
                 frames,
                 props: &props,
+                progress,
                 encoder: engine.encoder.as_deref(),
                 workers,
                 workers_why: why,

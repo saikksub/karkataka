@@ -36,7 +36,11 @@ pub fn run_subprocess() -> Option<i32> {
 }
 
 /// Render frames `0..job.frames` and call `on_frame(n, bgra_pixels)` for each, in order.
-pub fn render<F>(job: &Job, on_frame: F) -> Result<(), String>
+///
+/// Returns the page's report: if the page defines `window.__karkaReport()`, the engine calls it
+/// once after load, before frame 0, and returns the string it gives (@karkataka/runtime lists
+/// its audio clips there).
+pub fn render<F>(job: &Job, on_frame: F) -> Result<Option<String>, String>
 where
     F: FnMut(u32, &[u8]) -> Result<(), String> + Send,
 {

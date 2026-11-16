@@ -17,15 +17,15 @@ Rules for this file:
 
 1. **Choose the default painting mode.** Neither wins everywhere. In the scene tests (`tests/scenes/run.sh`, 2026-11-15), GPU painting was faster on `css-3d` (72 vs 36 fps) and `filters` (64 vs 47 fps), and CPU painting (`--software`) was faster on `dom-stress` (39 vs 22 fps) and the bench scene. Other scenes were close. Since 2026-11-15 `--software` disables only GPU compositing, so WebGL still works. Option: let auto mode pick per scene with a short trial render.
 2. **`karka still`.** Render one frame of a page and save it as PNG. Almost free with the current engine.
-3. **`delayRender` in the runtime.** `useFrame`, `interpolate`, `spring`, `Sequence`, `karka render --props` and the C quiz example are done (2026-11-15). Scenes that load web fonts, images or data need a way to make `__setFrame` wait.
-4. **Profile the per-frame cost.** Find how much time goes to the ~3 copies per frame and ffmpeg's CPU BGRA-to-YUV conversion before optimising them.
-5. **Fix the cef crate's CEF download upstream.** Its index download fails because the CDN's index.json is over the 10 MB limit. A fix in tauri-apps/cef-rs would let us drop `scripts/fetch-cef.sh` and the `CEF_VERSION` install step.
-6. **CI on Linux and macOS** running `cargo test` and `tests/scenes/run.sh`. The Linux path has never run.
-7. **CLI options** for fps, size and stall timeout (now fixed at 30 fps, 1080x1920, 10 s).
-8. **JSON progress lines** (`--json`) during long renders, so AI agents can follow progress.
-9. **`OnAcceleratedPaint` GPU path.** Frames go from Chromium to the encoder without a CPU copy. Only worth it after item 4.
-10. **Audio muxing.**
-11. **Studio.** Scrubber, props panel, render button.
+3. **Audio volume over time** (fades, ducking under speech). `<Audio volume>` is one number for the whole clip today (2026-11-15).
+4. **`delayRender` in the runtime.** `useFrame`, `interpolate`, `spring`, `Sequence`, `karka render --props` and the C quiz example are done (2026-11-15). Scenes that load web fonts, images or data need a way to make `__setFrame` wait.
+5. **Profile the per-frame cost.** Find how much time goes to the ~3 copies per frame and ffmpeg's CPU BGRA-to-YUV conversion before optimising them.
+6. **Fix the cef crate's CEF download upstream.** Its index download fails because the CDN's index.json is over the 10 MB limit. A fix in tauri-apps/cef-rs would let us drop `scripts/fetch-cef.sh` and the `CEF_VERSION` install step.
+7. **CI on Linux and macOS** running `cargo test` and `tests/scenes/run.sh`. The Linux path has never run.
+8. **CLI options** for fps, size and stall timeout (now fixed at 30 fps, 1080x1920, 10 s).
+9. **JSON progress lines on stdout with `--json`.** `karka render --progress` prints them to stderr since 2026-11-15 (the Studio uses it); `smoke` has none.
+10. **`OnAcceleratedPaint` GPU path.** Frames go from Chromium to the encoder without a CPU copy. Only worth it after item 4.
+11. **Studio: audio in the preview, and cancelling a render.** The preview is silent, and a render stops only when the Studio tab closes (2026-11-15).
 12. **Publish to crates.io.** Bump to 0.1.0 and publish in the order in the README.
 
 ## Bench

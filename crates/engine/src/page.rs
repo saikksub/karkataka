@@ -35,6 +35,17 @@ pub(crate) fn marker_script(height: u32) -> String {
     MARKER_SCRIPT.replace("{H}", &height.to_string())
 }
 
+/// Console messages starting with this carry the page's report (see `report_script`).
+pub(crate) const REPORT_PREFIX: &str = "__karka_report:";
+
+/// Run once after load, before frame 0: logs `window.__karkaReport()` (a string the page builds,
+/// such as its audio clips) for the engine to pick up. Pages without it log nothing.
+pub(crate) const REPORT_SCRIPT: &str = r#"if (window.__karkaReport) {
+  let report;
+  try { report = String(window.__karkaReport()); } catch (e) { report = JSON.stringify({ error: String(e) }); }
+  console.log("__karka_report:" + report);
+}"#;
+
 /// The script that starts frame `n`.
 pub(crate) fn frame_script(n: u32) -> String {
     format!("window.__karkaFrame({n})")

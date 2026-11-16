@@ -12,28 +12,42 @@ use std::sync::mpsc::{Receiver, sync_channel};
 
 /// Set on a render worker; it reads its job from stdin and writes frames to stdout.
 pub(crate) const WORKER_ENV: &str = "KARKA_WORKER";
-/// A frame record is `n: u32` then the pixels; `n == ERROR_RECORD` is followed by a length and a message.
+/// A frame record is `n: u32` then the pixels. `ERROR_RECORD` and `REPORT_RECORD` are followed
+/// by a length and text instead; a report comes after the worker's last frame.
 const ERROR_RECORD: u32 = u32::MAX;
+const REPORT_RECORD: u32 = u32::MAX - 1;
 
 type Record = Result<(u32, Vec<u8>), String>;
 type Inbox = Receiver<Record>;
 
-/// Render with `workers` worker processes and call `on_frame` for each frame, in order.
-pub(crate) fn render_parallel<F>(job: &Job, workers: u32, on_frame: F) -> Result<(), String>
+/// Render with `workers` worker processes and call `on_frame` for each frame, in order. Returns
+/// the page's report, taken from worker 0 (every worker's page makes the same one).
+pub(crate) fn render_parallel<F>(job: &Job, workers: u32, on_frame: F) -> Result<Option<String>, String>
 where
     F: FnMut(u32, &[u8]) -> Result<(), String>,
 {
     let exe = std::env::current_exe().ok().ok_or("cannot find the karka executable")?;
-    run_workers(workers, |w| spawn_worker(&exe, job, w, workers), |inboxes| collect(job.frames, inboxes, on_frame))
+    run_workers(workers, |w| spawn_worker(&exe, job, w, workers), |inboxes| {
+        collect(job.frames, inboxes, on_frame)?;
+        Ok(report(&inboxes[0]))
+    })
+}
+
+/// The report record after a worker's last frame, if it sent one.
+fn report(inbox: &Inbox) -> Option<String> {
+    match inbox.recv() {
+        Ok(Ok((REPORT_RECORD, text))) => Some(String::from_utf8_lossy(&text).into_owned()),
+        _ => None,
+    }
 }
 
 /// Start `workers` workers with `spawn`, then hand their inboxes to `consume`. On any error every
 /// started worker is killed; either way all of them are waited for.
-fn run_workers(
+fn run_workers<T>(
     workers: u32,
     mut spawn: impl FnMut(u32) -> Result<(Child, Inbox), String>,
-    consume: impl FnOnce(&[Inbox]) -> Result<(), String>,
-) -> Result<(), String> {
+    consume: impl FnOnce(&[Inbox]) -> Result<T, String>,
+) -> Result<T, String> {
     let mut children = Vec::new();
     let mut inboxes = Vec::new();
     let started = (0..workers).try_for_each(|w| {
@@ -99,20 +113,22 @@ fn spawn_worker(exe: &Path, job: &Job, worker: u32, workers: u32) -> Result<(Chi
 
 fn read_record(r: &mut impl Read, len: usize) -> std::io::Result<Record> {
     let n = read_u32(r)?;
-    if n == ERROR_RECORD {
-        let mut message = vec![0; read_u32(r)? as usize];
-        r.read_exact(&mut message)?;
-        return Ok(Err(String::from_utf8_lossy(&message).into_owned()));
+    if n == ERROR_RECORD || n == REPORT_RECORD {
+        let mut text = vec![0; read_u32(r)? as usize];
+        r.read_exact(&mut text)?;
+        // A report travels as a record numbered REPORT_RECORD with the text in place of pixels.
+        return Ok(if n == ERROR_RECORD { Err(String::from_utf8_lossy(&text).into_owned()) } else { Ok((n, text)) });
     }
     let mut pixels = vec![0; len];
     r.read_exact(&mut pixels)?;
     Ok(Ok((n, pixels)))
 }
 
-fn write_error(w: &mut impl Write, error: &str) -> std::io::Result<()> {
-    w.write_all(&ERROR_RECORD.to_le_bytes())?;
-    w.write_all(&(error.len() as u32).to_le_bytes())?;
-    w.write_all(error.as_bytes())
+/// An `ERROR_RECORD` or `REPORT_RECORD` with its text.
+fn write_text(w: &mut impl Write, kind: u32, text: &str) -> std::io::Result<()> {
+    w.write_all(&kind.to_le_bytes())?;
+    w.write_all(&(text.len() as u32).to_le_bytes())?;
+    w.write_all(text.as_bytes())
 }
 
 fn read_u32(r: &mut impl Read) -> std::io::Result<u32> {
@@ -140,9 +156,11 @@ pub(crate) fn run_worker() -> i32 {
         }
         _ => Err("render worker started without a valid job on stdin".to_string()),
     };
-    if let Err(error) = &result {
-        let _ = write_error(&mut out, error);
-    }
+    let _ = match &result {
+        Ok(Some(report)) => write_text(&mut out, REPORT_RECORD, report),
+        Ok(None) => Ok(()),
+        Err(error) => write_text(&mut out, ERROR_RECORD, error),
+    };
     let _ = out.flush();
     i32::from(result.is_err())
 }
@@ -167,10 +185,12 @@ mod tests {
         let mut pipe = Vec::new();
         pipe.extend_from_slice(&7u32.to_le_bytes());
         pipe.extend_from_slice(&[1, 2, 3, 4]);
-        write_error(&mut pipe, "boom").unwrap();
+        write_text(&mut pipe, ERROR_RECORD, "boom").unwrap();
+        write_text(&mut pipe, REPORT_RECORD, "{}").unwrap();
         let mut r = pipe.as_slice();
         assert_eq!(read_record(&mut r, 4).unwrap(), Ok((7, vec![1, 2, 3, 4])));
         assert_eq!(read_record(&mut r, 4).unwrap(), Err("boom".to_string()));
+        assert_eq!(read_record(&mut r, 4).unwrap(), Ok((REPORT_RECORD, b"{}".to_vec())));
         assert!(read_record(&mut r, 4).is_err(), "end of stream");
     }
 
@@ -185,10 +205,10 @@ mod tests {
     }
 
     #[test]
-    fn write_error_reports_a_full_pipe() {
+    fn write_text_reports_a_full_pipe() {
         for room in [0, 5, 9] {
             let mut buf = vec![0u8; room];
-            assert!(write_error(&mut buf.as_mut_slice(), "a long message").is_err(), "room {room}");
+            assert!(write_text(&mut buf.as_mut_slice(), ERROR_RECORD, "a long message").is_err(), "room {room}");
         }
     }
 
@@ -219,15 +239,21 @@ mod tests {
     }
 
     #[test]
+    fn report_comes_after_the_last_frame() {
+        assert_eq!(report(&inbox(vec![Ok((REPORT_RECORD, b"r".to_vec()))])), Some("r".into()));
+        assert_eq!(report(&inbox(vec![])), None, "no report: the worker just ends");
+    }
+
+    #[test]
     fn run_workers_kills_started_workers_on_error() {
         let started = Instant::now();
         let sleeper = || Ok((Command::new("sleep").arg("30").spawn().unwrap(), sync_channel(1).1));
         // Worker 0 starts, worker 1 fails to start: worker 0 must be killed, not waited out.
-        let consume_nothing = |_: &[Inbox]| Ok(());
+        let consume_nothing = |_: &[Inbox]| Ok::<(), String>(());
         let result = run_workers(2, |w| if w == 1 { Err("no worker 1".into()) } else { sleeper() }, consume_nothing);
         assert_eq!(result.unwrap_err(), "no worker 1");
         // A consumer error also kills the workers.
-        let result = run_workers(1, |_| sleeper(), |_| Err("consumer failed".into()));
+        let result: Result<(), _> = run_workers(1, |_| sleeper(), |_| Err("consumer failed".into()));
         assert_eq!(result.unwrap_err(), "consumer failed");
         assert!(started.elapsed() < Duration::from_secs(10), "workers were waited out instead of killed");
         // On success, workers are waited for.

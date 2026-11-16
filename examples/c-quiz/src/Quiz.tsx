@@ -1,8 +1,18 @@
 import { For } from "solid-js";
-import { config, getProps, interpolate, SafeArea, Sequence, spring, useFrame } from "@karkataka/runtime";
+import { Audio, config, getProps, interpolate, SafeArea, Sequence, spring, useFrame, type PropsSchema } from "@karkataka/runtime";
 import defaults from "../props.json";
 
-const props = getProps(defaults);
+/** How the Studio's props panel edits the props. */
+export const schema: PropsSchema = {
+  number: { type: "integer", title: "Quiz number", minimum: 1 },
+  question: { type: "string", title: "Question" },
+  code: { type: "string", title: "Code", multiline: true },
+  options: { type: "array", title: "Options", items: { type: "string" }, description: "Four answers, A to D." },
+  answer: { type: "integer", title: "Correct option", minimum: 0, maximum: 3, description: "0 = A, 1 = B, 2 = C, 3 = D." },
+  explanation: { type: "string", title: "Explanation", multiline: true },
+};
+
+const props = getProps(defaults, schema);
 const { fps, frames } = config;
 const lines = props.code.split("\n");
 const letters = "ABCD";
@@ -122,8 +132,11 @@ function Timer(p: { total: number }) {
   const urgent = () => left() <= 3;
   // Each second the number pops and settles.
   const pop = () => 1 + 0.18 * (1 - spring({ frame: (p.total - f()) % fps === 0 ? 0 : fps - ((p.total - f()) % fps), fps, damping: 18 }));
+  // One tick at the start of each second.
+  const ticks = Array.from({ length: Math.ceil(p.total / fps) }, (_, s) => s * fps);
   return (
     <div style={{ position: "absolute", inset: "0", display: "grid", "place-items": "center", opacity: `${interpolate(f(), [0, 8], [0, 1])}` }}>
+      <For each={ticks}>{(at) => <Audio src="tick.wav" start={at} volume={0.6} />}</For>
       <svg width="260" height="260" viewBox="0 0 260 260" style={{ position: "absolute" }}>
         <circle cx="130" cy="130" r={r} fill="none" stroke="#1f2742" stroke-width="16" />
         <circle
@@ -148,6 +161,7 @@ function Reveal() {
   const f = useFrame();
   return (
     <div style={{ ...fadeUp(spring({ frame: f() - 6, fps, damping: 14 })), position: "absolute", inset: "0", display: "flex", "flex-direction": "column", "justify-content": "center", "text-align": "center" }}>
+      <Audio src="ding.wav" />
       <div style={{ "font-size": "56px", "font-weight": "800", color: "#3ddc84" }}>
         Answer: {letters[props.answer]} · {props.options[props.answer]}
       </div>

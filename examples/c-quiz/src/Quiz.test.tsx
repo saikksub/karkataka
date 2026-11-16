@@ -44,3 +44,20 @@ test("lines of code keep their indentation", () => {
   const lines = Array.from(root.querySelectorAll<HTMLElement>("[style*='white-space']"), (l) => l.textContent);
   expect(lines).toEqual(defaults.code.split("\n").map((l) => l || " "));
 });
+
+test("audio: a tick each second of the countdown, then the ding at the reveal", () => {
+  const { audio } = JSON.parse(window.__karkaReport!());
+  const ticks = audio.filter((c: { src: string }) => c.src === "tick.wav").map((c: { from: number }) => c.from);
+  expect(ticks).toEqual(Array.from({ length: Math.ceil((revealAt - timerAt) / 30) }, (_, s) => timerAt + s * 30));
+  expect(audio.filter((c: { src: string }) => c.src === "ding.wav")).toEqual([{ src: "ding.wav", from: revealAt, to: null, skip: 0, volume: 1 }]);
+});
+
+test("the Studio schema describes exactly the props in props.json", async () => {
+  const { schema } = await import("./Quiz.tsx");
+  expect(Object.keys(schema).sort()).toEqual(Object.keys(defaults).sort());
+  for (const [name, s] of Object.entries(schema)) {
+    const value = (defaults as Record<string, unknown>)[name];
+    const type = Array.isArray(value) ? "array" : typeof value === "number" ? (Number.isInteger(value) ? "integer" : "number") : typeof value;
+    expect(s.type, name).toBe(type);
+  }
+});

@@ -642,6 +642,7 @@ dependencies = [
  "clap",
  "karkataka-encode",
  "karkataka-engine",
+ "karkataka-media",
  "png",
  "semver",
  "serde_json",
