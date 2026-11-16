@@ -1,0 +1,21 @@
+[package]
+name = "karka"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Video editing from the command line: projects of tracks and clips, scenes in SolidJS, rendered on the GPU by offscreen Chromium."
+readme = "../../README.md"
+
+[dependencies]
+cef = "=156.4.0"
+clap = { version = "4.6.7", features = ["derive"] }
+png = "0.18.1"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+semver = "1.0.28"
+
+# macOS: `cargo run -p karka --bin bundle-karka` builds karka.app with these helper processes.
+[package.metadata.cef.bundle]
+helper_name = "karka_helper"

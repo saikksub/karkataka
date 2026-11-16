@@ -1,4 +1,4 @@
-import type { Clip, Project } from "@karkataka/sdk/edit";
+import type { Clip, Project } from "@karkataka/player/project";
 import { createSignal, For, Show } from "solid-js";
 
 const label = (c: Clip) =>

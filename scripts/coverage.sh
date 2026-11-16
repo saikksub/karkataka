@@ -53,7 +53,7 @@ expect_error smoke --frames 5 --out "$out/e" --mode single --workers 2
 expect_error smoke --frames 5 --out "$out/e" --mode multi --workers 0
 expect_error smoke --frames 5 --out "$out/e" --page "$out/missing.html"
 expect_error smoke --frames 5 --out /dev/null/out
-for command in studio "still x"; do
+for command in "still x"; do
   # shellcheck disable=SC2086
   expect_error $command
 done
@@ -112,6 +112,77 @@ for mode in "--mode single" "--mode multi --workers 2"; do
 done
 printf '<script type="module">window.__setFrame = () => {}; window.__karkaReport = () => { throw new Error("no clips"); };</script>' > "$out/bad-report.html"
 expect_error render "$out/bad-report.html" --frames 2 --out "$out/r/x.mp4"
+# Projects: make one, edit it with every command, look at it, render it, open the Studio.
+P=$out/project
+k() { "$KARKA" --json "$@"; }
+ok() { "$@" | grep -q '"ok":true' || { echo "failed: $*" >&2; exit 1; }; }
+ok k new "$P" --width 640 --height 360 --fps 10 --background "#111"
+ok k new "$P" --empty --force
+ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=320x180:rate=10:duration=2 -f lavfi -i sine=duration=2 -shortest "$P/media/clip.mp4"
+ffmpeg -loglevel error -y -f lavfi -i color=c=blue:size=64x64 -frames:v 1 "$P/media/logo.png"
+ok k add-track "$P" --id V1 --name Video
+ok k add-track "$P" --id T1 --index 1
+ok k scene "$P" Card --track T1 --duration 10
+ok k add "$P" --track V1 type=video src=media/clip.mp4 trim=5
+ok k add "$P" --track V1 type=image src=media/logo.png duration=5 fit=contain
+ok k add "$P" --track T1 type=text text=2024 duration=5 style.fontSize=40
+ok k set "$P" text-1 style.color=red fadeIn=2
+ok k set "$P" T1 name=Titles
+ok k set "$P" project duration=30
+ok k move "$P" text-1 --start 20
+ok k split "$P" video-1 --at 5
+ok k add "$P" --track T1 type=color color=red duration=2
+ok k remove "$P" color-1
+ok k show "$P"
+ok k validate "$P"
+ok k fields
+ok k fields video
+ok k probe "$P/media/clip.mp4" --fps 10
+ok k probe "$P/media/logo.png"
+ok k still "$P" --frame 12
+ok k still "$P/project.json" --frame 3 --out "$out/r/project-still.png"
+ok k render "$P" --progress
+ok k render "$P" --software --mode multi --workers 2 --out "$out/r/project-multi.mp4"
+echo "project commands ok"
+expect_error new "$P"
+expect_error scene "$P" lower
+expect_error fields gif
+expect_error probe "$P/media/missing.mp4"
+expect_error add "$P" --track V1 text=x
+expect_error add "$P" --track V1 type=text text=x
+expect_error add "$P" --track V1 type=color color=red duration=5 start=0
+expect_error add "$P" --track V1 broken
+expect_error set "$P" text-1 size=3
+expect_error move "$P" nope --start 1
+expect_error split "$P" video-1 --at 0
+expect_error remove "$P" nope
+expect_error still "$P" --frame 30
+expect_error render "$P" --width 1280
+expect_error show "$out/missing-project"
+# A scene that does not compile stops the render at once, with the compiler's message.
+cp -R "$P" "$out/broken-scene"
+printf 'export default () => <div>;\n' > "$out/broken-scene/scenes/Card.tsx"
+expect_error still "$out/broken-scene" --frame 12
+# A project with problems lists them, as JSON and as text.
+cp -R "$P" "$out/bad-project"
+sed -i '' 's|media/clip.mp4|media/gone.mp4|' "$out/bad-project/project.json"
+expect_error validate "$out/bad-project"
+expect_error render "$out/bad-project"
+{ "$KARKA" validate "$out/bad-project" 2>&1 || true; } | grep -q "file not found: media/gone.mp4"
+printf '{' > "$out/bad-project/project.json"
+expect_error still "$out/bad-project"
+echo "project errors ok"
+# The Studio: serve, answer, stop on request (so the instrumented binary exits and writes its data).
+"$KARKA" studio "$P" --port 4719 > "$out/studio.json" 2>"$out/studio.log" &
+studio=$!
+for _ in $(seq 1 50); do curl -s localhost:4719/api/project >/dev/null && break; sleep 0.2; done
+curl -s localhost:4719/api/project | grep -q '"file":"project.json"'
+curl -s -X POST localhost:4719/api/quit | grep -q stopping
+wait $studio
+grep -q stopped "$out/studio.json"
+expect_error studio "$out/missing-project" --port 4719
+echo "studio ok"
+
 # A relative TMPDIR still gives each process its own CEF profile.
 TMPDIR=relative-tmp "$KARKA" smoke --frames 2 --out "$out/e" --json | grep -q '"ok":true'
 echo "relative TMPDIR ok"
@@ -137,14 +208,30 @@ if [[ $(uname -s) == Darwin ]]; then
 fi
 
 echo "== coverage"
+# A process killed while writing its data (a Chromium helper at shutdown, a worker stopped on an
+# error) leaves a half-written file that would stop the merge; set those aside.
+profdata=$(ls "$(rustc --print sysroot)"/lib/rustlib/*/bin/llvm-profdata | head -1)
+for f in "$CARGO_TARGET_DIR"/*.profraw; do
+  if ! "$profdata" show "$f" >/dev/null 2>&1; then echo "skipping unreadable $(basename "$f")"; rm -f "$f"; fi
+done
 cargo llvm-cov report --summary-only
 if [[ ${1:-} == --html ]]; then
   cargo llvm-cov report --html --output-dir "$CARGO_TARGET_DIR"
   echo "HTML report: $CARGO_TARGET_DIR/html/index.html"
 fi
-cargo llvm-cov report --fail-under-lines 100 >/dev/null || {
-  cargo llvm-cov report --show-missing-lines | sed -n '/Uncovered Lines/,$p'
+# Every line ran at least once, in a unit test or a real run, and every function (closures too)
+# ran. (llvm-cov's own line total counts a function compiled into both the test binary and karka
+# once per copy, so it calls a line missed when only one copy ran it; the merged per-line data
+# below does not.)
+cargo llvm-cov report --lcov --output-path "$CARGO_TARGET_DIR/lcov.info" >/dev/null
+missed=$(awk -F'[:,]' '/^SF:/ { file = $2 } /^DA:/ && $3 == 0 { print file ":" $2 }' "$CARGO_TARGET_DIR/lcov.info" | sed "s|$PWD/||")
+if [[ -n $missed ]]; then
+  echo "lines never run:"; echo "$missed"
   echo "line coverage is below 100%" >&2
   exit 1
+fi
+cargo llvm-cov report --fail-under-functions 100 >/dev/null || {
+  echo "some functions never ran (often an error closure: give it a test, or a form without a closure)" >&2
+  exit 1
 }
-echo "every line is covered"
+echo "every line and every function ran"

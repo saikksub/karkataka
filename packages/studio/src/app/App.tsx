@@ -1,26 +1,19 @@
-/// <reference types="vite/client" />
+import type { Clip, Project } from "@karkataka/player/project";
 import type { PropSchema } from "@karkataka/runtime";
-import type { PlayerProject } from "@karkataka/sdk";
-import {
-  addClip, addTrack, CLIP_FIELDS, CLIP_TYPES, durationOf, find, moveClip, PROJECT_FIELDS, remove, splitClip, updateClip, updateProject, updateTrack,
-  type Clip, type ClipType, type NewClip, type Problem, type Project,
-} from "@karkataka/sdk/edit";
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
+import { api, durationOf, findClip, forPlayer, scenesOf, type Edit, type Fields, type Problem, type RenderEvent } from "../api.ts";
 import { propNames } from "../fields.ts";
-import type { ProjectState, RenderEvent } from "../plugin.ts";
 import { clampFrame, playhead } from "../timeline.ts";
 import { Field } from "./Field.tsx";
 import { Timeline } from "./Timeline.tsx";
 
-/** The project with media URLs this dev server serves. */
-function forPlayer(project: Project, dir: string): PlayerProject {
-  const url = (src: string) => (src.includes("://") ? src : `/@fs${src.startsWith("/") ? src : `${dir}/${src}`}`);
-  const clips = (c: Clip) => (c.type === "video" || c.type === "image" || c.type === "audio" ? { ...c, url: url(c.src) } : c);
-  return { ...project, duration: durationOf(project), tracks: project.tracks.map((t) => ({ ...t, clips: t.clips.map(clips) })) };
-}
+const CLIP_TYPES = ["video", "image", "audio", "text", "color", "component"] as const;
+type ClipType = (typeof CLIP_TYPES)[number];
 
 export function App() {
-  const [state, setState] = createSignal<Omit<ProjectState, "problems">>();
+  const [state, setState] = createSignal<{ project: Project; file: string }>();
+  const [fields, setFields] = createSignal<{ project: Fields; clips: Record<string, Fields> }>({ project: {}, clips: {} });
+  const [scenesChanged, setScenesChanged] = createSignal(0);
   const [problems, setProblems] = createSignal<Problem[]>([]);
   const [error, setError] = createSignal("");
   const [selected, setSelected] = createSignal<string>();
@@ -28,7 +21,8 @@ export function App() {
   const [playing, setPlaying] = createSignal(false);
   const [loop, setLoop] = createSignal(true);
   const [safeZone, setSafeZone] = createSignal(true);
-  const [player, setPlayer] = createSignal<Window>();
+  // Not compared: a reloaded page keeps the same Window object, and must still get the project.
+  const [player, setPlayer] = createSignal<Window | undefined>(undefined, { equals: false });
   const project = () => state()?.project;
   const duration = () => (project() ? durationOf(project()!) : 1);
   const fps = () => project()?.fps ?? 30;
@@ -39,64 +33,87 @@ export function App() {
   let lastKey = "";
   let lastAt = 0;
   let saved = "";
-  let saving: ReturnType<typeof setTimeout>;
+
+  function show(s: { project: Project; file: string; problems: Problem[] }) {
+    saved = JSON.stringify(s.project);
+    setProblems(s.problems);
+    setState({ project: s.project, file: s.file });
+  }
 
   async function load() {
-    const res = await fetch("/__karka/project");
-    const body = await res.json();
-    if (!res.ok) return setError(body.error);
-    const s = body as ProjectState;
-    setProblems(s.problems);
-    // Our own save coming back: nothing new.
-    if (JSON.stringify(s.project) === saved) return;
-    if (project()) past.push(project()!);
-    saved = JSON.stringify(s.project);
-    setState({ project: s.project, dir: s.dir, file: s.file });
-  }
-
-  function commit(next: Project) {
-    setState((s) => ({ ...s!, project: next }));
-    clearTimeout(saving);
-    saving = setTimeout(async () => {
-      saved = JSON.stringify(next);
-      const res = await fetch("/__karka/project", { method: "PUT", body: saved });
-      const body = await res.json();
-      setProblems(body.problems ?? []);
-      if (!res.ok) setError(body.error);
-    }, 250);
-  }
-
-  /** Apply an edit (an SDK operation); show why when it is refused. */
-  function edit(change: (p: Project) => Project, key = "") {
     try {
-      const next = change(project()!);
-      if (key === "" || key !== lastKey || Date.now() - lastAt > 1000) past.push(project()!);
-      [lastKey, lastAt, future] = [key, Date.now(), []];
-      setError("");
-      commit(next);
+      const s = await api.project();
+      // Our own edit coming back: nothing new.
+      if (JSON.stringify(s.project) === saved) return setProblems(s.problems);
+      if (project()) past.push(project()!);
+      show(s);
     } catch (e) {
       setError((e as Error).message);
     }
   }
-  const undo = () => past.length && (future.push(project()!), commit(past.pop()!));
-  const redo = () => future.length && (past.push(project()!), commit(future.pop()!));
+
+  // Edits run one after another, and only the last one's result is shown: typing sends an edit
+  // per key, and an older answer must not overwrite what was typed since.
+  let queue: Promise<unknown> = Promise.resolve();
+  let waiting = 0;
+  /** Make an edit through karka (the same rules as the CLI); show why when it is refused. */
+  function edit(change: Edit, key = "") {
+    waiting++;
+    const run = async () => {
+      const before = project()!;
+      try {
+        const s = await api.edit(change);
+        if (key === "" || key !== lastKey || Date.now() - lastAt > 1000) past.push(before);
+        [lastKey, lastAt, future] = [key, Date.now(), []];
+        setError("");
+        if (waiting === 1) show(s);
+        else saved = JSON.stringify(s.project);
+        return s.result;
+      } catch (e) {
+        setError((e as Error).message);
+        // Show the project as it is, so a field that was refused shows its real value again.
+        setState((s) => ({ ...s!, project: structuredClone(s!.project) }));
+      } finally {
+        waiting--;
+      }
+    };
+    const result = queue.then(run);
+    queue = result;
+    return result;
+  }
+  async function replace(next: Project) {
+    try {
+      show(await api.replace(next));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  const undo = () => past.length && (future.push(project()!), replace(past.pop()!));
+  const redo = () => future.length && (past.push(project()!), replace(future.pop()!));
 
   onMount(() => {
     load();
-    // The file changed on disk (an agent's edit, or yours in an editor).
-    import.meta.hot?.on("karka:project", load);
+    api.fields().then(setFields, (e) => setError(e.message));
+    // A file changed on disk: the project (an agent's edit) or a scene (yours, in your editor).
+    const events = new EventSource("/api/events");
+    events.addEventListener("project", load);
+    events.addEventListener("scenes", () => setScenesChanged((n) => n + 1));
+    onCleanup(() => events.close());
   });
 
-  // The player page: fps and size are read once when it loads, so a change reloads it.
+  // The player page compiles the scenes once when it loads: a new size, fps, scene file or edited
+  // scene loads it again.
   const playerUrl = createMemo(() => {
     const p = project();
-    return p && `/player?karka=${encodeURIComponent(JSON.stringify({ fps: p.fps, width: p.width, height: p.height, frames: durationOf(p), props: {} }))}`;
+    if (!p) return undefined;
+    const config = { fps: p.fps, width: p.width, height: p.height, frames: durationOf(p), props: {} };
+    return `/player?karka=${encodeURIComponent(JSON.stringify(config))}&scenes=${encodeURIComponent(scenesOf(p))}&v=${scenesChanged()}`;
   });
   createEffect(() => {
     const p = project();
     const w = player();
     if (p && w?.__karkaSetProject) {
-      w.__karkaSetProject(forPlayer(p, state()!.dir));
+      w.__karkaSetProject(forPlayer(p));
       w.__setFrame?.(untrack(frame));
     }
   });
@@ -138,9 +155,9 @@ export function App() {
         ArrowRight: () => step(e.shiftKey ? 10 : 1),
         Home: () => step(-duration()),
         End: () => step(duration()),
-        Delete: () => selected() && (edit((p) => remove(p, selected()!).project), setSelected(undefined)),
-        Backspace: () => selected() && (edit((p) => remove(p, selected()!).project), setSelected(undefined)),
-        s: () => selected() && edit((p) => splitClip(p, selected()!, frame()).project),
+        Delete: () => selected() && (edit({ op: "remove", id: selected()! }), setSelected(undefined)),
+        Backspace: () => selected() && (edit({ op: "remove", id: selected()! }), setSelected(undefined)),
+        s: () => selected() && edit({ op: "split", clip: selected()!, at: frame() }),
       };
       if (actions[e.key]) {
         e.preventDefault();
@@ -151,15 +168,7 @@ export function App() {
     onCleanup(() => window.removeEventListener("keydown", keys));
   });
 
-  const clip = () => {
-    const id = selected();
-    if (!id || !project()) return undefined;
-    try {
-      return find(project()!, id).clip;
-    } catch {
-      return undefined;
-    }
-  };
+  const clip = () => (project() ? findClip(project()!, selected()) : undefined);
   const portrait = () => project() && project()!.width * 16 === project()!.height * 9;
 
   return (
@@ -167,7 +176,14 @@ export function App() {
       <div class="studio">
         <main>
           <div class="top">
-            <Preview url={playerUrl()!} width={project()!.width} height={project()!.height} safeZone={Boolean(portrait()) && safeZone()} onLoad={(w) => setPlayer(() => w)} />
+            <Preview
+              url={playerUrl()!}
+              width={project()!.width}
+              height={project()!.height}
+              safeZone={Boolean(portrait()) && safeZone()}
+              // The page compiles its scenes after it loads; send it the project and frame once it can draw.
+              onLoad={(w) => void Promise.resolve(w.__karkaReady).then(() => setPlayer(() => w), () => setPlayer(() => w))}
+            />
           </div>
           <div class="timeline">
             <div class="controls">
@@ -194,8 +210,8 @@ export function App() {
               selected={selected()}
               onSeek={(f) => (setPlaying(false), setFrame(clampFrame(f, duration())))}
               onSelect={setSelected}
-              onMove={(id, start) => edit((p) => moveClip(p, id, { start }).project)}
-              onTrack={(id, patch) => edit((p) => updateTrack(p, id, patch).project)}
+              onMove={(id, start) => edit({ op: "move", clip: id, start })}
+              onTrack={(id, patch) => edit({ op: "set", target: id, fields: patch })}
             />
           </div>
         </main>
@@ -214,16 +230,17 @@ export function App() {
               {(c) => (
                 <ClipPanel
                   clip={c()}
+                  fields={fields().clips[c().type] ?? {}}
                   player={player()}
                   frame={frame()}
-                  onChange={(name, value) => edit((p) => updateClip(p, c().id, { [name]: value ?? null }).project, `${c().id}.${name}`)}
-                  onSplit={() => edit((p) => splitClip(p, c().id, frame()).project)}
-                  onDelete={() => (edit((p) => remove(p, c().id).project), setSelected(undefined))}
+                  onChange={(name, value) => edit({ op: "set", target: c().id, fields: { [name]: value ?? null } }, `${c().id}.${name}`)}
+                  onSplit={() => edit({ op: "split", clip: c().id, at: frame() })}
+                  onDelete={() => (edit({ op: "remove", id: c().id }), setSelected(undefined))}
                 />
               )}
             </Match>
             <Match when={!clip()}>
-              <ProjectPanel project={project()!} file={state()!.file} frame={frame()} edit={edit} onAdded={setSelected} />
+              <ProjectPanel project={project()!} file={state()!.file} fields={fields().project} frame={frame()} edit={edit} onAdded={setSelected} />
             </Match>
           </Switch>
           <RenderPanel frames={duration()} />
@@ -264,15 +281,17 @@ function Preview(p: { url: string; width: number; height: number; safeZone: bool
 
 function ClipPanel(p: {
   clip: Clip;
+  fields: Fields;
   player?: Window;
   frame: number;
   onChange: (name: string, value: unknown) => void;
   onSplit: () => void;
   onDelete: () => void;
 }) {
-  const fields = () => CLIP_FIELDS[p.clip.type];
-  // A component may export a schema for its props; then each prop gets its own field.
-  const propsSchema = () => (p.clip.type === "component" ? (p.player?.__karkaComponents?.[p.clip.component]?.schema as Record<string, PropSchema> | undefined) : undefined);
+  const fields = () => p.fields;
+  // A scene may export a schema for its props; then each prop gets its own field.
+  const propsSchema = () =>
+    p.clip.type === "component" ? (p.player?.__karkaComponents?.[`@project/${p.clip.component.replace(/^\.\//, "")}`]?.schema as Record<string, PropSchema> | undefined) : undefined;
   const inside = () => p.frame > p.clip.start && p.frame < p.clip.start + p.clip.duration;
   return (
     <section>
@@ -310,7 +329,7 @@ function ClipPanel(p: {
 }
 
 /** Defaults for a clip added from the Studio: 3 seconds at the playhead. */
-const starter = (type: ClipType, fps: number): NewClip => {
+const starter = (type: ClipType, fps: number): Record<string, unknown> => {
   const duration = 3 * fps;
   return {
     video: { type: "video", src: "media/clip.mp4", duration },
@@ -318,11 +337,18 @@ const starter = (type: ClipType, fps: number): NewClip => {
     audio: { type: "audio", src: "media/sound.wav", duration },
     text: { type: "text", text: "Text", duration },
     color: { type: "color", color: "#334", duration },
-    component: { type: "component", component: "src/Component.tsx", duration },
-  }[type] as NewClip;
+    component: { type: "component", component: "scenes/Scene.tsx", duration },
+  }[type];
 };
 
-function ProjectPanel(p: { project: Project; file: string; frame: number; edit: (change: (p: Project) => Project, key?: string) => void; onAdded: (id: string) => void }) {
+function ProjectPanel(p: {
+  project: Project;
+  file: string;
+  fields: Fields;
+  frame: number;
+  edit: (change: Edit, key?: string) => Promise<Record<string, unknown> | undefined>;
+  onAdded: (id: string) => void;
+}) {
   const [type, setType] = createSignal<ClipType>("text");
   const [track, setTrack] = createSignal("");
   const target = () => track() || p.project.tracks.at(-1)?.id || "";
@@ -332,13 +358,13 @@ function ProjectPanel(p: { project: Project; file: string; frame: number; edit: 
         <header>
           <h2>Project · {p.file}</h2>
         </header>
-        <For each={Object.keys(PROJECT_FIELDS)}>
+        <For each={Object.keys(p.fields)}>
           {(name) => (
             <Field
               name={name}
-              schema={PROJECT_FIELDS[name]}
+              schema={p.fields[name]}
               value={(p.project as unknown as Record<string, unknown>)[name]}
-              onChange={(v) => p.edit((pr) => updateProject(pr, { [name]: v ?? null }), `project.${name}`)}
+              onChange={(v) => p.edit({ op: "set", target: "project", fields: { [name]: v ?? null } }, `project.${name}`)}
             />
           )}
         </For>
@@ -348,7 +374,7 @@ function ProjectPanel(p: { project: Project; file: string; frame: number; edit: 
           <h2>Add</h2>
         </header>
         <div class="actions">
-          <button onClick={() => p.edit((pr) => addTrack(pr).project)}>+ Track</button>
+          <button onClick={() => p.edit({ op: "add-track" })}>+ Track</button>
         </div>
         <Show when={p.project.tracks.length}>
           <div class="add-clip">
@@ -359,13 +385,11 @@ function ProjectPanel(p: { project: Project; file: string; frame: number; edit: 
               <For each={[...p.project.tracks].reverse()}>{(t) => <option value={t.id} selected={t.id === target()}>{t.name ?? t.id}</option>}</For>
             </select>
             <button
-              onClick={() =>
-                p.edit((pr) => {
-                  const added = addClip(pr, target(), { ...starter(type(), pr.fps), start: p.frame } as NewClip);
-                  queueMicrotask(() => p.onAdded(added.clip.id));
-                  return added.project;
-                })
-              }
+              onClick={async () => {
+                const added = await p.edit({ op: "add", track: target(), fields: { ...starter(type(), p.project.fps), start: p.frame } });
+                const id = (added?.clip as { id?: string } | undefined)?.id;
+                if (id) p.onAdded(id);
+              }}
             >
               Add at playhead
             </button>
@@ -397,7 +421,7 @@ function RenderPanel(p: { frames: number }) {
       else if (event.type === "error") setJob({ state: "error", message: event.message });
     };
     try {
-      const res = await fetch("/__karka/render", { method: "POST" });
+      const res = await fetch("/api/render", { method: "POST" });
       const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = "";
       for (;;) {

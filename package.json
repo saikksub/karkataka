@@ -4,10 +4,10 @@
   "packageManager": "pnpm@10.33.2",
   "scripts": {
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "assets": "pnpm --filter @karkataka/compiler assets"
   },
   "devDependencies": {
-    "@karkataka/sdk": "workspace:*",
     "typescript": "^5.9.0"
   }
 }

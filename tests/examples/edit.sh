@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End to end, as an AI agent would work: build a 16:9 edit from media using only `karkataka`
+# End to end, as an AI agent would work: build a 16:9 edit from media using only `karka`
 # commands, check it, look at stills, render it, and check the pictures and sound.
 #
 #   tests/examples/edit.sh        exit code 0 when everything passes
@@ -10,12 +10,12 @@ cd "$(dirname "$0")/../.."
 if [[ -z ${KARKA:-} ]]; then
   if [[ $(uname -s) == Darwin ]]; then KARKA=$PWD/target/bundle/karka.app/Contents/MacOS/karka; else KARKA=$PWD/target/release/karka; fi
 fi
-export KARKA
-k() { node_modules/.bin/karkataka "$@"; }
+k() { "$KARKA" --json "$@"; }
 dir=out/examples/edit
 rm -rf "$dir" && mkdir -p "$dir"
-examples/edit/make-media.sh "$dir/media" >/dev/null
-p=$dir/edit.json
+p=$dir/project
+k new "$p" --empty >/dev/null
+examples/edit/make-media.sh "$p/media" >/dev/null
 
 failed=0
 check() { # check <what> <got> <expected>
@@ -38,7 +38,6 @@ colour() {
 json() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);console.log(eval("v."+process.argv[1]))})' "$1"; }
 
 # Build the edit. Times are frames at 30 fps.
-k new "$p" >/dev/null
 k add-track "$p" --id V1 --name Video >/dev/null
 k add-track "$p" --id V2 --name Overlays >/dev/null
 k add-track "$p" --id A1 --name Music >/dev/null
@@ -65,7 +64,7 @@ check "frame 50: second part, source frame 80 (green)" "$(colour "$dir/f50.png" 
 check "frame 50: logo still there" "$(colour "$dir/f50.png" 1680 240)" blue
 
 # Render, and check the video: size, length, sound, and the same pictures.
-result=$(k render "$p" --out "$dir/edit.mp4" 2>"$dir/progress.log")
+result=$(k render "$p" --out "$dir/edit.mp4" --progress 2>"$dir/progress.log")
 check "render ok" "$(json ok <<<"$result")" true
 check "audio clips (2 video parts + music)" "$(json result.audio_clips <<<"$result")" 3
 check "progress lines" "$(wc -l <"$dir/progress.log" | tr -d ' ')" 90
