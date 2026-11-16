@@ -8,7 +8,25 @@ Video editing from the command line, for people and AI agents. A video is a **pr
 
 `karka` is one Rust binary. It renders with offscreen Chromium and encodes on the GPU, about 2x faster than Remotion on our benchmark. Your scenes compile inside that Chromium, so using karka needs no Node.js, npm or build step. You need FFmpeg.
 
-> **Status: early development.** Projects, scenes, stills, rendering (any size and frame rate, with sound) and the Studio work on macOS. Linux has never run. It is not on crates.io yet; build it from source. See [Roadmap](#roadmap).
+> **Status: early development.** Projects, scenes, stills, rendering (any size and frame rate, with sound) and the Studio work on macOS. Linux has never run. The crate is [on crates.io](https://crates.io/crates/karka) for [use as a library](#use-the-engine-as-a-library), but to use the `karka` command, build it from source as below: `cargo install karka` gives a binary that cannot start Chromium on macOS, because CEF only runs from inside an `.app`. See [Roadmap](#roadmap).
+
+## Getting started
+
+On macOS, with [Rust](https://rustup.rs) and [Homebrew](https://brew.sh) installed. This takes a few minutes, most of it downloading Chromium (about 135 MB) and building:
+
+```bash
+brew install ffmpeg
+git clone https://github.com/saikksub/karkataka && cd karkataka
+./scripts/fetch-cef.sh                       # Chromium for karka
+cargo run -p karka --bin bundle-karka        # builds target/bundle/karka.app
+alias karka=$PWD/target/bundle/karka.app/Contents/MacOS/karka
+
+karka new ~/my-video                          # a project with one scene
+karka render ~/my-video                       # ~/my-video/out/my-video.mp4
+karka studio ~/my-video                       # edit it at http://127.0.0.1:4000/
+```
+
+Then edit `scenes/Hello.tsx` in your code editor and watch the Studio update. [Setup](#setup) explains each step, and [Quick start](#quick-start) shows what to do next.
 
 ## Contents
 
@@ -352,7 +370,7 @@ The player draws a video clip's frame as the matching JPEG, and waits until it h
 
 ## Use the engine as a library
 
-> Not on crates.io yet. Once published, it is one crate, `karka`, with the `karka` binary and these modules: `engine` (page in, raw frames out), `encode` (frames into FFmpeg), `audio` (mixing), `project` (the project format, its checks and edits), and `render`.
+Add it with `cargo add karka` (see **Building it** below for CEF). It is one crate, [`karka`](https://crates.io/crates/karka), with the `karka` binary and these modules: `engine` (page in, raw frames out), `encode` (frames into FFmpeg), `audio` (mixing), `project` (the project format, its checks and edits), and `render`.
 
 ```rust
 use karka::encode::{Encoder, default_h264_encoder};
@@ -418,6 +436,8 @@ next-action-item.md      What we are doing next, and what is blocked
 - [x] Scenes in SolidJS, compiled inside karka (no Node), with editor types
 - [x] Audio mixed into the MP4: video sound, audio clips, `<Audio>` in scenes
 - [x] Studio: preview, multi-track timeline with drag, split and undo, inspector, live reload of scenes and of agent edits, render with progress
+- [x] On crates.io as `karka` (library)
+- [ ] Install without building: a prebuilt `karka.app` with CEF inside, then Homebrew
 - [ ] Keyframes: values that change over a clip (position, scale, volume) beyond fades
 - [ ] Transitions between clips, speed changes, trimming by dragging clip edges in the Studio
 - [ ] npm packages in scenes (karka compiles scenes without a bundler today)

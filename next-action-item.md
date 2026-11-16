@@ -27,7 +27,7 @@ Rules for this file:
 10. **`OnAcceleratedPaint` GPU path.** Frames go from Chromium to the encoder without a CPU copy. Only worth it after item 6 (profiling).
 11. **npm packages in scenes.** Scenes compile inside karka's Chromium with no bundler, so they can import only solid-js, the runtime and project files (2026-11-16). Option: let a project vendor ES modules into a folder that the import map serves.
 12. **Studio: audio in the preview, and cancelling a render.** The preview is silent, and a render stops only when the Studio tab closes (2026-11-15).
-13. **Publish to crates.io.** One crate now (`karka`). Run `pnpm assets`, bump to 0.1.0, `cargo publish -p karka`. On macOS `cargo install` alone is not enough: CEF must run from an .app bundle, so publishing needs an install story for the bundle (see the next action).
+13. **Install without building.** `karka` 0.0.0 is on crates.io since 2026-11-16, but `cargo install karka` cannot run on macOS (CEF needs an .app, and `bundle-karka` runs `cargo build` in the source checkout), and users still need `scripts/fetch-cef.sh` and `CEF_PATH`, which the crate does not ship. Ship a prebuilt release `karka.app` (zip on GitHub Releases, then a Homebrew tap) once `bundle-karka --release` exists (the next action).
 
 ## Bench
 
