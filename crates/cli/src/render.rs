@@ -1,17 +1,25 @@
-//! `karka render`: render a scene page to MP4, with props from the command line and the audio
-//! clips the page reports.
+//! `karka render` and `karka still`: render a page to MP4 (with the audio clips it reports) or
+//! one frame to PNG, with props, size and frame rate from the command line.
 
-use crate::smoke::{FPS, HEIGHT, WIDTH};
+use crate::smoke::write_png;
 use karkataka_media::Clip;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub struct Options<'a> {
-    pub page: &'a Path,
-    pub out: &'a Path,
+/// The page to render and what it is told in `window.__karka`.
+pub struct Page<'a> {
+    pub path: &'a Path,
     pub frames: u32,
     /// JSON from `--props`.
     pub props: &'a str,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+pub struct Options<'a> {
+    pub page: Page<'a>,
+    pub out: &'a Path,
     /// Print `{"frame": done, "frames": total}` to stderr after each frame.
     pub progress: bool,
     pub encoder: Option<&'a str>,
@@ -21,46 +29,90 @@ pub struct Options<'a> {
 }
 
 pub fn run(opts: Options) -> Result<Value, String> {
-    let html = std::fs::read_to_string(opts.page).map_err(|e| format!("cannot read {}: {e}", opts.page.display()))?;
-    let html = with_config(&html, opts.props, opts.frames)?;
-    // `parent()` is `None` only for "/" or "", which the encoder then rejects.
-    let dir = opts.out.parent().unwrap_or(opts.out);
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let page = &opts.page;
+    // yuv420p video, which every player supports, needs even sizes.
+    if page.width % 2 == 1 || page.height % 2 == 1 {
+        return Err(format!("video width and height must be even (got {}x{})", page.width, page.height));
+    }
+    let loaded = load(page)?;
+    create_parent(opts.out)?;
     let encoder = opts.encoder.unwrap_or(karkataka_encode::default_h264_encoder());
-    let mut video = karkataka_encode::Encoder::spawn(opts.out, WIDTH, HEIGHT, FPS, encoder)?;
+    let mut video = karkataka_encode::Encoder::spawn(opts.out, page.width, page.height, page.fps, encoder)?;
     let started = std::time::Instant::now();
-    let job = karkataka_engine::Job { html: &html, width: WIDTH, height: HEIGHT, frames: opts.frames, workers: opts.workers, gpu: opts.gpu };
+    let job = karkataka_engine::Job { url: &loaded.url, width: page.width, height: page.height, frames: page.frames, workers: opts.workers, gpu: opts.gpu };
     let report = karkataka_engine::render(&job, |n, bgra| {
         video.write_frame(bgra)?;
         if opts.progress {
-            eprintln!(r#"{{"frame":{},"frames":{}}}"#, n + 1, opts.frames);
+            eprintln!(r#"{{"frame":{},"frames":{}}}"#, n + 1, page.frames);
         }
         Ok(())
     })?;
     let render_secs = started.elapsed().as_secs_f64();
     video.finish()?;
-    let clips = audio_clips(report.as_deref(), opts.page, opts.frames)?;
+    let clips = audio_clips(report.as_deref(), page.path, page.frames, page.fps)?;
     karkataka_media::add_audio(opts.out, &clips)?;
     Ok(json!({
-        "frames": opts.frames,
+        "frames": page.frames,
+        "width": page.width,
+        "height": page.height,
+        "fps": page.fps,
         "audio_clips": clips.len(),
         "mp4": opts.out,
         "encoder": encoder,
         "workers": opts.workers,
         "workers_why": opts.workers_why,
         "gpu": opts.gpu,
-        "render_fps": (opts.frames as f64 / render_secs * 10.0).round() / 10.0,
+        "render_fps": (page.frames as f64 / render_secs * 10.0).round() / 10.0,
     }))
+}
+
+/// `karka still`: frame `frame` of the page as a PNG.
+pub fn still(page: &Page, frame: u32, out: &Path, gpu: bool) -> Result<Value, String> {
+    let loaded = load(page)?;
+    let job = karkataka_engine::Job { url: &loaded.url, width: page.width, height: page.height, frames: page.frames, workers: 1, gpu };
+    let pixels = karkataka_engine::render_frame(&job, frame)?;
+    create_parent(out)?;
+    write_png(out, page.width, page.height, &pixels)?;
+    Ok(json!({ "png": out, "frame": frame, "width": page.width, "height": page.height }))
+}
+
+fn create_parent(out: &Path) -> Result<(), String> {
+    // `parent()` is `None` only for "/" or "", which writing the file then rejects.
+    let dir = out.parent().unwrap_or(out);
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))
+}
+
+/// The page with its config, written next to the original so its relative links (images, other
+/// files) still work, and removed when dropped. It is loaded as a file, so it can load local files.
+struct Loaded {
+    file: PathBuf,
+    url: String,
+}
+
+impl Drop for Loaded {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.file);
+    }
+}
+
+fn load(page: &Page) -> Result<Loaded, String> {
+    let html = std::fs::read_to_string(page.path).map_err(|e| format!("cannot read {}: {e}", page.path.display()))?;
+    let html = with_config(&html, page)?;
+    let name = page.path.file_name().unwrap_or_default().to_string_lossy();
+    let file = page.path.with_file_name(format!(".karka-{}-{name}", std::process::id()));
+    std::fs::write(&file, html).map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    let url = karkataka_engine::file_url(&file);
+    Ok(Loaded { file, url })
 }
 
 /// The page with `window.__karka` (props, frames, fps, size) set before its module scripts run.
 /// It is appended: classic scripts run while the page parses, module scripts only after.
-fn with_config(html: &str, props: &str, frames: u32) -> Result<String, String> {
-    let props: Value = serde_json::from_str(props).map_err(|e| format!("--props is not valid JSON: {e}"))?;
+fn with_config(html: &str, page: &Page) -> Result<String, String> {
+    let props: Value = serde_json::from_str(page.props).map_err(|e| format!("--props is not valid JSON: {e}"))?;
     if !props.is_object() {
         return Err("--props must be a JSON object".into());
     }
-    let config = json!({ "props": props, "frames": frames, "fps": FPS, "width": WIDTH, "height": HEIGHT });
+    let config = json!({ "props": props, "frames": page.frames, "fps": page.fps, "width": page.width, "height": page.height });
     // Escaping `<` keeps a "</script>" inside the props from ending the script.
     Ok(format!("{html}\n<script>window.__karka = {};</script>", config.to_string().replace('<', "\\u003c")))
 }
@@ -68,13 +120,13 @@ fn with_config(html: &str, props: &str, frames: u32) -> Result<String, String> {
 /// The audio clips in the page's report (`{"audio": [{src, from, to, skip, volume}]}`, times in
 /// frames, `to: null` meaning the end), in seconds and cut to the video. A relative `src` is a
 /// file next to the page.
-fn audio_clips(report: Option<&str>, page: &Path, frames: u32) -> Result<Vec<Clip>, String> {
+fn audio_clips(report: Option<&str>, page: &Path, frames: u32, fps: u32) -> Result<Vec<Clip>, String> {
     let Some(report) = report else { return Ok(Vec::new()) };
     let report: Value = serde_json::from_str(report).map_err(|e| format!("the page's report is not JSON: {e}"))?;
     if let Some(error) = report.get("error") {
         return Err(format!("the page's report failed: {error}"));
     }
-    let fps = f64::from(FPS);
+    let fps = f64::from(fps);
     let end = f64::from(frames);
     let mut clips = Vec::new();
     for c in report["audio"].as_array().map_or(&[][..], Vec::as_slice) {
@@ -110,11 +162,11 @@ fn reads_audio_clips_from_the_report() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("tick.wav"), b"").unwrap();
     let page = dir.join("index.html");
-    let clips = |report: &str| audio_clips(Some(report), &page, 90);
+    let clips = |report: &str| audio_clips(Some(report), &page, 90, 30);
     let clip = |src: &str, at, skip, duration, volume| Clip { src: src.into(), at, skip, duration, volume };
     let tick = dir.join("tick.wav").to_string_lossy().into_owned();
 
-    assert_eq!(audio_clips(None, &page, 90), Ok(vec![]));
+    assert_eq!(audio_clips(None, &page, 90, 30), Ok(vec![]));
     assert_eq!(clips(r#"{"audio":[]}"#), Ok(vec![]));
     assert_eq!(
         clips(
@@ -149,12 +201,13 @@ fn reads_audio_clips_from_the_report() {
 
 #[test]
 fn injects_props_as_config() {
-    let html = with_config("<p>", r#"{"code":"</script>"}"#, 90).unwrap();
+    let page = |props| Page { path: Path::new("x.html"), frames: 90, props, width: 1920, height: 1080, fps: 25 };
+    let html = with_config("<p>", &page(r#"{"code":"</script>"}"#)).unwrap();
     assert_eq!(
         html,
         r#"<p>
-<script>window.__karka = {"fps":30,"frames":90,"height":1920,"props":{"code":"\u003c/script>"},"width":1080};</script>"#
+<script>window.__karka = {"fps":25,"frames":90,"height":1080,"props":{"code":"\u003c/script>"},"width":1920};</script>"#
     );
-    assert!(with_config("", "{", 1).unwrap_err().contains("not valid JSON"));
-    assert!(with_config("", "[1]", 1).unwrap_err().contains("JSON object"));
+    assert!(with_config("", &page("{")).unwrap_err().contains("not valid JSON"));
+    assert!(with_config("", &page("[1]")).unwrap_err().contains("JSON object"));
 }

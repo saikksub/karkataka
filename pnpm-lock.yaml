@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@karkataka/sdk':
+        specifier: workspace:*
+        version: link:packages/sdk
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -30,15 +33,28 @@ importers:
       vite:
         specifier: ^8.3.8
         version: 8.3.8(@types/node@26.6.6)
-      vite-plugin-singlefile:
-        specifier: ^2.3.4
-        version: 2.3.4(vite@8.3.8(@types/node@26.6.6))
       vite-plugin-solid:
         specifier: ^2.11.16
         version: 2.11.16(solid-js@1.9.19)(vite@8.3.8(@types/node@26.6.6))
       vitest:
         specifier: ^5.1.0
         version: 5.1.0(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6))
+
+  examples/edit:
+    dependencies:
+      solid-js:
+        specifier: ^1.9.19
+        version: 1.9.19
+    devDependencies:
+      '@karkataka/studio':
+        specifier: workspace:*
+        version: link:../../packages/studio
+      vite:
+        specifier: ^8.3.8
+        version: 8.3.8(@types/node@26.6.6)
+      vite-plugin-solid:
+        specifier: ^2.11.16
+        version: 2.11.16(solid-js@1.9.19)(vite@8.3.8(@types/node@26.6.6))
 
   packages/runtime:
     devDependencies:
@@ -58,11 +74,39 @@ importers:
         specifier: ^5.1.0
         version: 5.1.0(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6))
 
+  packages/sdk:
+    dependencies:
+      '@karkataka/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      solid-js:
+        specifier: ^1.9.19
+        version: 1.9.19
+      vite:
+        specifier: ^8.3.8
+        version: 8.3.8(@types/node@26.6.6)
+      vite-plugin-singlefile:
+        specifier: ^2.3.4
+        version: 2.3.4(vite@8.3.8(@types/node@26.6.6))
+      vite-plugin-solid:
+        specifier: ^2.11.16
+        version: 2.11.16(solid-js@1.9.19)(vite@8.3.8(@types/node@26.6.6))
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      vitest:
+        specifier: ^5.1.0
+        version: 5.1.0(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6))
+
   packages/studio:
     dependencies:
       '@karkataka/runtime':
         specifier: workspace:*
         version: link:../runtime
+      '@karkataka/sdk':
+        specifier: workspace:*
+        version: link:../sdk
       solid-js:
         specifier: ^1.9.19
         version: 1.9.19

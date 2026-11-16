@@ -68,16 +68,36 @@ pub(crate) fn read_marker(pixels: &[u8], width: usize, height: usize) -> Option<
     (0..MARKER_BITS).try_fold(0, |n, i| Some(n | (u32::from(cell(i)?) << i)))
 }
 
-pub(crate) fn data_url(html: &str) -> String {
-    let mut url = String::from("data:text/html;charset=utf-8,");
-    for b in html.bytes() {
-        if b.is_ascii_alphanumeric() || b".-_~".contains(&b) {
+/// A `data:` URL holding `html`. Such a page cannot load local files; use `file_url` for that.
+pub fn data_url(html: &str) -> String {
+    escape("data:text/html;charset=utf-8,", html, b".-_~")
+}
+
+/// The `file://` URL of `path` (made absolute). A page loaded from a file can load other local
+/// files, such as images and video frames.
+pub fn file_url(path: &std::path::Path) -> String {
+    // `absolute` fails only for an empty path, which no page has.
+    let path = std::path::absolute(path).unwrap_or_default();
+    escape("file://", &path.to_string_lossy(), b".-_~/")
+}
+
+/// `prefix` then `text`, percent-encoding every byte except ASCII letters, digits and `keep`.
+fn escape(prefix: &str, text: &str, keep: &[u8]) -> String {
+    let mut url = String::from(prefix);
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || keep.contains(&b) {
             url.push(b as char);
         } else {
             url.push_str(&format!("%{b:02X}"));
         }
     }
     url
+}
+
+#[test]
+fn file_url_escapes_paths() {
+    assert_eq!(file_url(std::path::Path::new("/a b/c#.html")), "file:///a%20b/c%23.html");
+    assert!(file_url(std::path::Path::new("x.html")).starts_with("file:///"), "made absolute");
 }
 
 #[test]

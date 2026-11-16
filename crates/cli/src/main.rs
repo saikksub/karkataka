@@ -22,31 +22,33 @@ struct Cli {
 enum Command {
     /// How to open the Studio (it runs in the scene's Vite dev server)
     Studio,
-    /// Render a scene page to MP4. The page gets `window.__karka` (props, frames, fps, size)
-    /// and must define `__setFrame(n)`; @karkataka/runtime does both for you
+    /// Render a page to MP4. The page gets `window.__karka` (props, frames, fps, size) and must
+    /// define `__setFrame(n)`; @karkataka/runtime does both. For projects, use the karkataka SDK
     Render {
-        /// Single-file HTML page, e.g. a built scene: examples/c-quiz/dist/index.html
-        page: PathBuf,
+        #[command(flatten)]
+        page: PageArgs,
         /// Output video file
         #[arg(long, default_value = "out/render.mp4")]
         out: PathBuf,
-        #[arg(long, default_value_t = 300)]
-        frames: u32,
-        /// Scene props as a JSON object, e.g. '{"question": "..."}'
-        #[arg(long, default_value = "{}")]
-        props: String,
         /// Print a JSON line to stderr as each frame is done: {"frame": <frames done>, "frames": <total>}
         #[arg(long)]
         progress: bool,
         #[command(flatten)]
         engine: EngineArgs,
     },
-    /// Export one frame of a scene as PNG
+    /// Render one frame of a page to PNG
     Still {
-        /// Scene id, e.g. quiz-12
-        scene: String,
+        #[command(flatten)]
+        page: PageArgs,
+        /// Frame to render (0 is the first)
         #[arg(long, default_value_t = 0)]
         frame: u32,
+        /// Output PNG file
+        #[arg(long, default_value = "out/still.png")]
+        out: PathBuf,
+        /// Paint on the CPU instead of the GPU
+        #[arg(long)]
+        software: bool,
     },
     /// Engine smoke test: render a built-in 1080x1920 page, check every frame, write frame0.png and smoke.mp4
     Smoke {
@@ -62,6 +64,34 @@ enum Command {
         #[command(flatten)]
         engine: EngineArgs,
     },
+}
+
+/// The page and what it is told, shared by `render` and `still`.
+#[derive(clap::Args)]
+struct PageArgs {
+    /// HTML page, e.g. a built scene. It is loaded as a file, so it can use files next to it
+    page: PathBuf,
+    /// Length of the video in frames
+    #[arg(long, default_value_t = 300)]
+    frames: u32,
+    /// Props as a JSON object, e.g. '{"title": "..."}'
+    #[arg(long, default_value = "{}")]
+    props: String,
+    #[arg(long, default_value_t = 1920)]
+    width: u32,
+    #[arg(long, default_value_t = 1080)]
+    height: u32,
+    #[arg(long, default_value_t = 30)]
+    fps: u32,
+}
+
+impl PageArgs {
+    fn page(&self) -> Result<render::Page<'_>, String> {
+        if self.fps == 0 {
+            return Err("--fps must be at least 1".into());
+        }
+        Ok(render::Page { path: &self.page, frames: self.frames, props: &self.props, width: self.width, height: self.height, fps: self.fps })
+    }
 }
 
 /// How to run the browser and encoder, shared by `smoke` and `render`.
@@ -98,12 +128,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Studio => Err("the Studio runs in your scene's Vite dev server: add `studio()` from @karkataka/studio to its vite.config.ts, run `vite`, and open /studio".to_string()),
-        Command::Render { page, out, frames, props, progress, engine } => engine.workers(frames).and_then(|(workers, why)| {
+        Command::Render { page, out, progress, engine } => engine.workers(page.frames).and_then(|(workers, why)| {
             render::run(render::Options {
-                page: &page,
+                page: page.page()?,
                 out: &out,
-                frames,
-                props: &props,
                 progress,
                 encoder: engine.encoder.as_deref(),
                 workers,
@@ -111,7 +139,7 @@ fn main() -> ExitCode {
                 gpu: !engine.software,
             })
         }),
-        Command::Still { .. } => Err("`karka still` is not implemented yet".to_string()),
+        Command::Still { page, frame, out, software } => page.page().and_then(|p| render::still(&p, frame, &out, !software)),
         Command::Smoke { out, frames, page, engine } => engine.workers(frames).and_then(|(workers, why)| {
             smoke::run(smoke::Options {
                 out: &out,

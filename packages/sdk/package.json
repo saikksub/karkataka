@@ -1,0 +1,28 @@
+{
+  "name": "@karkataka/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./edit": "./src/edit.ts"
+  },
+  "bin": {
+    "karkataka": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@karkataka/runtime": "workspace:*",
+    "solid-js": "^1.9.19",
+    "vite": "^8.3.8",
+    "vite-plugin-singlefile": "^2.3.4",
+    "vite-plugin-solid": "^2.11.16"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "vitest": "^5.1.0"
+  }
+}

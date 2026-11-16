@@ -7,6 +7,7 @@
     "test": "pnpm -r test"
   },
   "devDependencies": {
+    "@karkataka/sdk": "workspace:*",
     "typescript": "^5.9.0"
   }
 }

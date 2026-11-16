@@ -1,11 +1,13 @@
+import { Sequence } from "@karkataka/runtime";
 import { render } from "solid-js/web";
 import { expect, test } from "vitest";
 import defaults from "../props.json";
-import { codeAt, optionsAt, Quiz, revealAt, timerAt } from "./Quiz.tsx";
+import Quiz, { timeline } from "./Quiz.tsx";
 
-// No --props or --frames here: the scene uses props.json and 300 frames at 30 fps.
+// The quiz with its default props, as the whole video: 300 frames at 30 fps (the runtime's defaults outside karka).
+const { codeAt, optionsAt, timerAt, revealAt } = timeline(defaults, 300, 30);
 const root = document.createElement("div");
-render(() => <Quiz />, root);
+render(() => <Quiz {...defaults} />, root);
 const at = (n: number) => {
   window.__setFrame!(n);
   return root.textContent!;
@@ -47,9 +49,9 @@ test("lines of code keep their indentation", () => {
 
 test("audio: a tick each second of the countdown, then the ding at the reveal", () => {
   const { audio } = JSON.parse(window.__karkaReport!());
-  const ticks = audio.filter((c: { src: string }) => c.src === "tick.wav").map((c: { from: number }) => c.from);
+  const ticks = audio.filter((c: { src: string }) => c.src === "public/tick.wav").map((c: { from: number }) => c.from);
   expect(ticks).toEqual(Array.from({ length: Math.ceil((revealAt - timerAt) / 30) }, (_, s) => timerAt + s * 30));
-  expect(audio.filter((c: { src: string }) => c.src === "ding.wav")).toEqual([{ src: "ding.wav", from: revealAt, to: null, skip: 0, volume: 1 }]);
+  expect(audio.filter((c: { src: string }) => c.src === "public/ding.wav")).toEqual([{ src: "public/ding.wav", from: revealAt, to: null, skip: 0, volume: 1 }]);
 });
 
 test("the Studio schema describes exactly the props in props.json", async () => {
@@ -60,4 +62,28 @@ test("the Studio schema describes exactly the props in props.json", async () => 
     const type = Array.isArray(value) ? "array" : typeof value === "number" ? (Number.isInteger(value) ? "integer" : "number") : typeof value;
     expect(s.type, name).toBe(type);
   }
+});
+
+test("as a clip, the quiz uses its props and fits its timeline to the clip's length", () => {
+  const clip = document.createElement("div");
+  // A 240-frame clip starting at frame 1000 of a longer video.
+  const stop = render(
+    () => (
+      <Sequence from={1000} duration={240}>
+        <Quiz question="Which is bigger?" />
+      </Sequence>
+    ),
+    clip,
+  );
+  const reveal = timeline(defaults, 240, 30).revealAt;
+  expect(reveal).toBe(240 - 90);
+  // Too short for 3 s of answer: the countdown still gets 1 s.
+  expect(timeline(defaults, 150, 30).revealAt).toBe(timerAt + 30);
+  window.__setFrame!(1000);
+  expect(clip.textContent).toContain("Which is bigger?");
+  window.__setFrame!(1000 + reveal - 1);
+  expect(clip.textContent).not.toContain("Answer");
+  window.__setFrame!(1000 + reveal);
+  expect(clip.textContent).toContain("Answer: B");
+  stop();
 });

@@ -77,7 +77,7 @@ test("config comes from window.__karka, which karka render sets before the page'
   expect(fresh.config).toBe(window.__karka);
   delete window.__karka;
   vi.resetModules();
-  expect((await import("./index.tsx")).config).toEqual({ props: {}, frames: 300, fps: 30, width: 1080, height: 1920 });
+  expect((await import("./index.tsx")).config).toEqual({ props: {}, frames: 300, fps: 30, width: 1920, height: 1080 });
 });
 
 test("SafeArea sits on the Reels safe zone", () => {
@@ -181,8 +181,8 @@ test("outside karka, the Studio's ?karka= URL sets props and frames; bad JSON is
     props: { a: 2 },
     frames: 90,
     fps: 30,
-    width: 1080,
-    height: 1920,
+    width: 1920,
+    height: 1080,
   });
   expect((await load("?karka=%7Bbroken")).frames).toBe(300);
   window.history.replaceState(null, "", "/");
@@ -192,4 +192,67 @@ test("getProps tells the Studio the defaults and schema", () => {
   const schema = { title: { type: "string" as const } };
   getProps({ title: "x" }, schema);
   expect(window.__karkaScene).toEqual({ defaults: { title: "x" }, schema });
+});
+
+test("waitFor holds the frame until its promises settle; failures are logged, not fatal", async () => {
+  vi.resetModules();
+  const { waitFor } = await import("./index.tsx");
+  expect(window.__setFrame!(1)).toBeUndefined(); // nothing to wait for: draws at once
+  let release!: () => void;
+  waitFor(new Promise<void>((r) => (release = r)));
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  waitFor(Promise.reject(new Error("no image")));
+  let done = false;
+  const frame = window.__setFrame!(2) as Promise<void>;
+  frame.then(() => (done = true));
+  await Promise.resolve();
+  expect(done).toBe(false);
+  release();
+  await frame;
+  expect(done).toBe(true);
+  expect(error).toHaveBeenCalledOnce();
+  error.mockRestore();
+});
+
+test("useDuration is the Sequence's length; isReporting is true only during the report", async () => {
+  vi.resetModules();
+  const { Sequence, useDuration, isReporting } = await import("./index.tsx");
+  const seen: string[] = [];
+  const Probe = () => {
+    seen.push(`${useDuration()}:${isReporting()}`);
+    return null;
+  };
+  const stop = render(
+    () => (
+      <>
+        <Probe />
+        <Sequence from={10} duration={40}>
+          <Probe />
+        </Sequence>
+      </>
+    ),
+    document.createElement("div"),
+  );
+  window.__karkaReport!();
+  stop();
+  expect(seen).toEqual(["300:false", "40:true"]);
+  expect(isReporting()).toBe(false);
+});
+
+test("AssetBase makes a relative Audio src absolute; absolute paths and URLs stay", async () => {
+  vi.resetModules();
+  const { Audio, AssetBase } = await import("./index.tsx");
+  const stop = render(
+    () => (
+      <AssetBase.Provider value="/projects/quiz/">
+        <Audio src="public/tick.wav" />
+        <Audio src="/abs/ding.wav" />
+        <Audio src="https://x/y.mp3" />
+      </AssetBase.Provider>
+    ),
+    document.createElement("div"),
+  );
+  const srcs = JSON.parse(window.__karkaReport!()).audio.map((c: { src: string }) => c.src);
+  stop();
+  expect(srcs).toEqual(["/projects/quiz/public/tick.wav", "/abs/ding.wav", "https://x/y.mp3"]);
 });

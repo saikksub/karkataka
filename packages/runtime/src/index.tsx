@@ -49,7 +49,7 @@ function fromUrl(): Partial<Config> {
 }
 
 /** Set by `karka render`. Elsewhere: these defaults, overridden by the Studio's `?karka=`. */
-export const config: Config = window.__karka ?? { props: {}, frames: 300, fps: 30, width: 1080, height: 1920, ...fromUrl() };
+export const config: Config = window.__karka ?? { props: {}, frames: 300, fps: 30, width: 1920, height: 1080, ...fromUrl() };
 
 /** `defaults`, overridden by the props from `karka render --props` or the Studio. `schema` tells the Studio how to edit them. */
 export function getProps<P extends object>(defaults: P, schema?: PropsSchema): P {
@@ -58,8 +58,31 @@ export function getProps<P extends object>(defaults: P, schema?: PropsSchema): P
 }
 
 const [frame, setFrame] = createSignal(0);
-// The engine calls this for each frame. Solid updates the DOM synchronously, before it paints.
-window.__setFrame = (n) => void setFrame(n);
+let pending: Promise<unknown>[] = [];
+let reporting = false;
+
+/**
+ * Make the current frame wait for `promise` before karka captures it: an image decoding, a font
+ * loading, data arriving. Call it while drawing the frame. A rejected promise is logged, not fatal.
+ */
+export function waitFor(promise: Promise<unknown>): void {
+  pending.push(promise.catch((e) => console.error("karka: a frame waited for something that failed:", e)));
+}
+
+/** True while karka lists the audio clips (it shows every frame once): skip slow work such as loading images. */
+export function isReporting(): boolean {
+  return reporting;
+}
+
+// The engine calls this for each frame. Solid updates the DOM synchronously; then wait for anything
+// the frame asked to wait for.
+window.__setFrame = (n) => {
+  setFrame(n);
+  if (pending.length === 0) return;
+  const waits = pending;
+  pending = [];
+  return Promise.all(waits).then(() => undefined);
+};
 
 /** Frames where the enclosing `Sequence` starts and ends (the end is not included). */
 const Span = createContext({ start: 0, end: Infinity });
@@ -68,6 +91,12 @@ const Span = createContext({ start: 0, end: Infinity });
 export function useFrame(): Accessor<number> {
   const { start } = useContext(Span);
   return () => frame() - start;
+}
+
+/** Length of the enclosing `Sequence` in frames (at the top: the whole video). */
+export function useDuration(): number {
+  const { start, end } = useContext(Span);
+  return (Number.isFinite(end) ? end : config.frames) - start;
 }
 
 /** Shows `children` from frame `from` (relative to the enclosing Sequence) for `duration` frames (default: to the end). */
@@ -92,6 +121,12 @@ export interface AudioClip {
   volume: number;
 }
 
+/**
+ * Where a relative `<Audio src>` is found: an absolute folder path ending in "/". Without one,
+ * karka looks next to the page. The project player sets it to the project's folder.
+ */
+export const AssetBase = createContext("");
+
 // Keyed by the clip itself: a Sequence that mounts again re-registers the same clip, which must not
 // play twice. (So two identical clips at the same frame also play once.)
 const clips = new Map<string, AudioClip>();
@@ -104,10 +139,12 @@ const clips = new Map<string, AudioClip>();
  */
 export function Audio(props: { src: string; start?: number; trim?: [number, number?]; volume?: number }) {
   const span = useContext(Span);
+  const base = useContext(AssetBase);
+  const src = base && !props.src.startsWith("/") && !props.src.includes("://") ? base + props.src : props.src;
   const from = span.start + (props.start ?? 0);
   const [skip = 0, until] = props.trim ?? [];
   const to = Math.min(span.end, until === undefined ? Infinity : from + until - skip);
-  const clip: AudioClip = { src: props.src, from, to: Number.isFinite(to) ? to : null, skip, volume: props.volume ?? 1 };
+  const clip: AudioClip = { src, from, to: Number.isFinite(to) ? to : null, skip, volume: props.volume ?? 1 };
   clips.set(JSON.stringify(clip), clip);
   return null;
 }
@@ -115,12 +152,18 @@ export function Audio(props: { src: string; start?: number; trim?: [number, numb
 // karka calls this once after load. Clips inside a Sequence register only when it shows, so show
 // every frame once first.
 window.__karkaReport = () => {
-  for (let n = 0; n < config.frames; n++) setFrame(n);
+  reporting = true;
+  try {
+    for (let n = 0; n < config.frames; n++) setFrame(n);
+  } finally {
+    reporting = false;
+    pending = [];
+  }
   setFrame(0);
   return JSON.stringify({ audio: [...clips.values()] });
 };
 
-/** The Instagram Reels safe zone of the 1080x1920 frame. Everything the viewer must read goes inside; only full-bleed backgrounds go outside. */
+/** For 9:16 (1080x1920) phone video: the Instagram Reels safe zone. Everything the viewer must read goes inside; only full-bleed backgrounds go outside. */
 export function SafeArea(props: { children: JSX.Element }) {
   return <div style={{ position: "absolute", top: "250px", right: "200px", bottom: "440px", left: "96px" }}>{props.children}</div>;
 }

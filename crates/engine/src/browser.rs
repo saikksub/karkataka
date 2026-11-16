@@ -140,11 +140,11 @@ fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<Opti
         KarkaLifeSpan::new(),
         KarkaDisplay::new(state.clone()),
     );
-    let url = page::data_url(job.html);
+    let url = job.url;
     let browser = browser_host_create_browser_sync(
         Some(&window_info),
         Some(&mut client),
-        Some(&url.as_str().into()),
+        Some(&url.into()),
         Some(&browser_settings),
         None,
         None,

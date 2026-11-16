@@ -1,6 +1,12 @@
-import { For } from "solid-js";
-import { Audio, config, getProps, interpolate, SafeArea, Sequence, spring, useFrame, type PropsSchema } from "@karkataka/runtime";
+import { createContext, For, useContext } from "solid-js";
+import { Audio, config, interpolate, SafeArea, Sequence, spring, useDuration, useFrame, type PropsSchema } from "@karkataka/runtime";
 import defaults from "../props.json";
+
+// A 9:16 quiz short: question, code, four options, a countdown with ticks, then the answer with a
+// chime. Use it as a component clip in a 1080x1920 project; its length is the clip's duration.
+
+export type QuizProps = typeof defaults;
+export { defaults };
 
 /** How the Studio's props panel edits the props. */
 export const schema: PropsSchema = {
@@ -12,44 +18,57 @@ export const schema: PropsSchema = {
   explanation: { type: "string", title: "Explanation", multiline: true },
 };
 
-const props = getProps(defaults, schema);
-const { fps, frames } = config;
-const lines = props.code.split("\n");
 const letters = "ABCD";
 
-// Timeline, in frames. The reveal gets the last 3 seconds; the timer counts down until then.
-export const codeAt = 12;
-export const optionsAt = codeAt + lines.length * 4 + 8;
-export const timerAt = optionsAt + props.options.length * 6 + 8;
-export const revealAt = Math.max(timerAt + fps, frames - 3 * fps);
+/** Frames where each part starts, for a quiz `frames` long. The reveal gets the last 3 seconds; the timer counts down until then. */
+export function timeline(props: QuizProps, frames: number, fps: number) {
+  const codeAt = 12;
+  const optionsAt = codeAt + props.code.split("\n").length * 4 + 8;
+  const timerAt = optionsAt + props.options.length * 6 + 8;
+  return { codeAt, optionsAt, timerAt, revealAt: Math.max(timerAt + fps, frames - 3 * fps) };
+}
+
+type Quiz = ReturnType<typeof timeline> & { props: QuizProps; fps: number; lines: string[] };
+const QuizContext = createContext<Quiz>();
+const useQuiz = () => useContext(QuizContext)!;
 
 const fadeUp = (s: number, px = 50) => ({ opacity: `${Math.min(1, s)}`, transform: `translateY(${(1 - s) * px}px)` });
 
-export function Quiz() {
+export default function Quiz(input: Partial<QuizProps>) {
+  const props = { ...defaults, ...input };
+  const fps = config.fps;
+  const quiz: Quiz = { ...timeline(props, useDuration(), fps), props, fps, lines: props.code.split("\n") };
+  const { codeAt, optionsAt, timerAt, revealAt } = quiz;
   return (
-    <SafeArea>
-      <div style={{ display: "flex", "flex-direction": "column", gap: "36px", height: "100%" }}>
-        <Header />
-        <Sequence from={codeAt}>
-          <Code />
-        </Sequence>
-        <Sequence from={optionsAt}>
-          <Options />
-        </Sequence>
-        <div style={{ position: "relative", flex: "1" }}>
-          <Sequence from={timerAt} duration={revealAt - timerAt}>
-            <Timer total={revealAt - timerAt} />
+    <QuizContext.Provider value={quiz}>
+      {/* Full-bleed background; everything readable sits in the safe area. */}
+      <div style={{ position: "absolute", inset: "0", background: "radial-gradient(circle at 30% 20%, #1e2a4a, #0b0f1c 70%)", color: "#e8ecf6", "font-family": "-apple-system, Helvetica, Arial, sans-serif" }}>
+      <SafeArea>
+        <div style={{ display: "flex", "flex-direction": "column", gap: "36px", height: "100%" }}>
+          <Header />
+          <Sequence from={codeAt}>
+            <Code />
           </Sequence>
-          <Sequence from={revealAt}>
-            <Reveal />
+          <Sequence from={optionsAt}>
+            <Options />
           </Sequence>
+          <div style={{ position: "relative", flex: "1" }}>
+            <Sequence from={timerAt} duration={revealAt - timerAt}>
+              <Timer total={revealAt - timerAt} />
+            </Sequence>
+            <Sequence from={revealAt}>
+              <Reveal />
+            </Sequence>
+          </div>
         </div>
+      </SafeArea>
       </div>
-    </SafeArea>
+    </QuizContext.Provider>
   );
 }
 
 function Header() {
+  const { props, fps } = useQuiz();
   const f = useFrame();
   const s = () => spring({ frame: f(), fps, damping: 14 });
   return (
@@ -61,6 +80,7 @@ function Header() {
 }
 
 function Code() {
+  const { fps, lines } = useQuiz();
   const f = useFrame();
   // Fit the longest line into the panel (monospace glyphs are ~0.6em wide).
   const size = Math.min(40, (784 - 64) / (Math.max(...lines.map((l) => l.length)) * 0.6));
@@ -85,6 +105,7 @@ function Code() {
 }
 
 function Options() {
+  const { props, fps, revealAt, optionsAt } = useQuiz();
   const f = useFrame();
   // 0 until the reveal, then springs to 1.
   const revealed = () => spring({ frame: f() - (revealAt - optionsAt), fps, damping: 12 });
@@ -125,6 +146,7 @@ function Options() {
 }
 
 function Timer(p: { total: number }) {
+  const { fps } = useQuiz();
   const f = useFrame();
   const r = 110;
   const length = 2 * Math.PI * r;
@@ -136,7 +158,7 @@ function Timer(p: { total: number }) {
   const ticks = Array.from({ length: Math.ceil(p.total / fps) }, (_, s) => s * fps);
   return (
     <div style={{ position: "absolute", inset: "0", display: "grid", "place-items": "center", opacity: `${interpolate(f(), [0, 8], [0, 1])}` }}>
-      <For each={ticks}>{(at) => <Audio src="tick.wav" start={at} volume={0.6} />}</For>
+      <For each={ticks}>{(at) => <Audio src="public/tick.wav" start={at} volume={0.6} />}</For>
       <svg width="260" height="260" viewBox="0 0 260 260" style={{ position: "absolute" }}>
         <circle cx="130" cy="130" r={r} fill="none" stroke="#1f2742" stroke-width="16" />
         <circle
@@ -158,10 +180,11 @@ function Timer(p: { total: number }) {
 }
 
 function Reveal() {
+  const { props, fps } = useQuiz();
   const f = useFrame();
   return (
     <div style={{ ...fadeUp(spring({ frame: f() - 6, fps, damping: 14 })), position: "absolute", inset: "0", display: "flex", "flex-direction": "column", "justify-content": "center", "text-align": "center" }}>
-      <Audio src="ding.wav" />
+      <Audio src="public/ding.wav" />
       <div style={{ "font-size": "56px", "font-weight": "800", color: "#3ddc84" }}>
         Answer: {letters[props.answer]} · {props.options[props.answer]}
       </div>

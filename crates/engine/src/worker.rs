@@ -88,7 +88,7 @@ fn spawn_worker(exe: &Path, job: &Job, worker: u32, workers: u32) -> Result<(Chi
     let header = format!("{} {} {} {worker} {workers} {}\n", job.width, job.height, job.frames, u8::from(job.gpu));
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let stdout = child.stdout.take().expect("stdout is piped");
-    let sent = stdin.write_all(header.as_bytes()).and_then(|()| stdin.write_all(job.html.as_bytes()));
+    let sent = stdin.write_all(header.as_bytes()).and_then(|()| stdin.write_all(job.url.as_bytes()));
     drop(stdin);
     if let Err(e) = sent {
         let _ = child.kill();
@@ -141,13 +141,13 @@ fn read_u32(r: &mut impl Read) -> std::io::Result<u32> {
 pub(crate) fn run_worker() -> i32 {
     let mut stdin = BufReader::new(std::io::stdin().lock());
     let mut header = String::new();
-    let mut html = String::new();
-    let parsed = stdin.read_line(&mut header).and_then(|_| stdin.read_to_string(&mut html));
+    let mut url = String::new();
+    let parsed = stdin.read_line(&mut header).and_then(|_| stdin.read_to_string(&mut url));
     let fields: Vec<u32> = header.split_whitespace().filter_map(|f| f.parse().ok()).collect();
     let mut out = BufWriter::new(std::io::stdout());
     let result = match (parsed, fields.as_slice()) {
         (Ok(_), &[width, height, frames, first, step, gpu]) => {
-            let job = Job { html: &html, width, height, frames, workers: 1, gpu: gpu == 1 };
+            let job = Job { url: &url, width, height, frames, workers: 1, gpu: gpu == 1 };
             browser::render_in_process(&job, first, step, |n, pixels| {
                 out.write_all(&n.to_le_bytes())
                     .and_then(|()| out.write_all(pixels))
@@ -176,8 +176,8 @@ mod tests {
         rx
     }
 
-    fn job(html: &str) -> Job<'_> {
-        Job { html, width: 2, height: 1, frames: 1, workers: 2, gpu: true }
+    fn job(url: &str) -> Job<'_> {
+        Job { url, width: 2, height: 1, frames: 1, workers: 2, gpu: true }
     }
 
     #[test]

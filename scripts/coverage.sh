@@ -81,6 +81,25 @@ expect_error render "$out/props.html" --out /dev/null/x.mp4
 expect_error render "$out/props.html" --frames 2 --mode single --workers 2
 expect_error render "$out/props.html" --frames 2 --out "$out/r/x.mp4" --encoder no-such-encoder
 expect_error render "$out/no-set-frame.html" --frames 1 --out "$out/r/x.mp4"
+# Size and frame rate, and still frames (a page loaded as a file, so it can use the image next to it).
+ffmpeg -loglevel error -y -f lavfi -i color=c=blue:size=64x64 -frames:v 1 "$out/blue.png"
+printf '<style>body{margin:0}</style><img id="i" src="blue.png" style="width:100%%;height:100%%"><script type="module">window.__setFrame = () => document.getElementById("i").decode();</script>' > "$out/image.html"
+"$KARKA" still "$out/image.html" --frames 5 --frame 3 --width 320 --height 180 --fps 25 --out "$out/r/still.png" --json | grep -q '"width":320'
+[[ $(ffmpeg -loglevel error -i "$out/r/still.png" -vf "crop=1:1:160:90" -f rawvideo -pix_fmt rgb24 - | od -An -tu1 | tr -s ' ') == " 0 0 255" ]]
+"$KARKA" render "$out/image.html" --frames 3 --width 320 --height 180 --fps 25 --out "$out/r/size.mp4" --json | grep -q '"fps":25'
+echo "still and render at 320x180 @ 25 ok"
+expect_error render "$out/image.html" --frames 2 --width 321 --out "$out/r/x.mp4"
+expect_error render "$out/image.html" --frames 2 --fps 0 --out "$out/r/x.mp4"
+expect_error still "$out/image.html" --frames 2 --frame 2 --out "$out/r/x.png"
+expect_error still "$out/image.html" --frames 2 --width 10 --out "$out/r/x.png"
+expect_error render "$out/image.html" --frames 2 --width 10 --out "$out/r/x.mp4"
+# A still of a page that never draws (stall watchdog, ~10 s).
+expect_error still "$out/no-set-frame.html" --frames 2 --out "$out/r/x.png"
+expect_error still "$out/image.html" --frames 2 --out /dev/null/x.png
+mkdir -p "$out/read-only" && cp "$out/image.html" "$out/read-only/" && chmod 555 "$out/read-only"
+expect_error still "$out/read-only/image.html" --frames 2 --out "$out/r/x.png"
+chmod 755 "$out/read-only"
+
 # Audio: the page reports a clip (and logs something else, which must be left alone), in one
 # browser and through worker processes; a report that throws fails the render.
 ffmpeg -loglevel error -y -f lavfi -i sine=duration=1 "$out/tone.wav"
@@ -100,7 +119,7 @@ echo "relative TMPDIR ok"
 # Render workers run directly: no job, and a parent that stops listening.
 if KARKA_WORKER=1 "$KARKA" </dev/null >/dev/null 2>&1; then echo "worker without a job did not fail" >&2; exit 1; fi
 # (The worker is expected to fail, so the pipeline's exit status is ignored.)
-printf '1080 1920 2 0 1 0\n<script>window.__setFrame = () => {};</script>' | KARKA_WORKER=1 "$KARKA" 2>/dev/null | true || true
+printf '1080 1920 2 0 1 0\ndata:text/html,%%3Cscript%%3Ewindow.__setFrame%%3D()%%3D%%3E%%7B%%7D%%3C%%2Fscript%%3E' | KARKA_WORKER=1 "$KARKA" 2>/dev/null | true || true
 echo "error path ok: worker without a job, worker whose parent stops listening"
 
 # Human-readable output, success and error.

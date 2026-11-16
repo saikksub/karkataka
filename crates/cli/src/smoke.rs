@@ -38,8 +38,9 @@ pub fn run(opts: Options) -> Result<Value, String> {
     let mut video = karkataka_encode::Encoder::spawn(&mp4_path, WIDTH, HEIGHT, FPS, encoder)?;
 
     let started = std::time::Instant::now();
+    let url = karkataka_engine::data_url(&html);
     let job = karkataka_engine::Job {
-        html: &html,
+        url: &url,
         width: WIDTH,
         height: HEIGHT,
         frames: opts.frames,
@@ -49,7 +50,7 @@ pub fn run(opts: Options) -> Result<Value, String> {
     karkataka_engine::render(&job, |n, bgra| {
         check_frame(n, bgra)?;
         if n == 0 {
-            write_png(&png_path, bgra)?;
+            write_png(&png_path, WIDTH, HEIGHT, bgra)?;
         }
         video.write_frame(bgra)
     })?;
@@ -93,11 +94,11 @@ fn decode_frame_number(bgra: &[u8]) -> Option<u32> {
     })
 }
 
-fn write_png(path: &Path, bgra: &[u8]) -> Result<(), String> {
+pub fn write_png(path: &Path, width: u32, height: u32, bgra: &[u8]) -> Result<(), String> {
     let rgba: Vec<u8> = bgra.as_chunks::<4>().0.iter().flat_map(|&[b, g, r, a]| [r, g, b, a]).collect();
     // Encode in memory, where only wrong sizes could fail, then write the file in one go.
     let mut bytes = Vec::new();
-    let mut png = png::Encoder::new(&mut bytes, WIDTH, HEIGHT);
+    let mut png = png::Encoder::new(&mut bytes, width, height);
     png.set_color(png::ColorType::Rgba);
     png.write_header()
         .and_then(|mut w| w.write_image_data(&rgba))

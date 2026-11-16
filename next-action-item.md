@@ -16,17 +16,18 @@ Rules for this file:
 ## TBD
 
 1. **Choose the default painting mode.** Neither wins everywhere. In the scene tests (`tests/scenes/run.sh`, 2026-11-15), GPU painting was faster on `css-3d` (72 vs 36 fps) and `filters` (64 vs 47 fps), and CPU painting (`--software`) was faster on `dom-stress` (39 vs 22 fps) and the bench scene. Other scenes were close. Since 2026-11-15 `--software` disables only GPU compositing, so WebGL still works. Option: let auto mode pick per scene with a short trial render.
-2. **`karka still`.** Render one frame of a page and save it as PNG. Almost free with the current engine.
-3. **Audio volume over time** (fades, ducking under speech). `<Audio volume>` is one number for the whole clip today (2026-11-15).
-4. **`delayRender` in the runtime.** `useFrame`, `interpolate`, `spring`, `Sequence`, `karka render --props` and the C quiz example are done (2026-11-15). Scenes that load web fonts, images or data need a way to make `__setFrame` wait.
-5. **Profile the per-frame cost.** Find how much time goes to the ~3 copies per frame and ffmpeg's CPU BGRA-to-YUV conversion before optimising them.
-6. **Fix the cef crate's CEF download upstream.** Its index download fails because the CDN's index.json is over the 10 MB limit. A fix in tauri-apps/cef-rs would let us drop `scripts/fetch-cef.sh` and the `CEF_VERSION` install step.
-7. **CI on Linux and macOS** running `cargo test` and `tests/scenes/run.sh`. The Linux path has never run.
-8. **CLI options** for fps, size and stall timeout (now fixed at 30 fps, 1080x1920, 10 s).
-9. **JSON progress lines on stdout with `--json`.** `karka render --progress` prints them to stderr since 2026-11-15 (the Studio uses it); `smoke` has none.
-10. **`OnAcceleratedPaint` GPU path.** Frames go from Chromium to the encoder without a CPU copy. Only worth it after item 4.
-11. **Studio: audio in the preview, and cancelling a render.** The preview is silent, and a render stops only when the Studio tab closes (2026-11-15).
-12. **Publish to crates.io.** Bump to 0.1.0 and publish in the order in the README.
+2. **Keyframes for clip fields** (position, scale, rotation, opacity, volume over time), so agents can animate without writing a component. Fades are the only change over a clip today (2026-11-16). This also gives audio fades and ducking.
+3. **Transitions and speed.** Cross-fades and wipes between clips on one track, and video speed (slow motion, fast forward). An agent can only cut or fade today.
+4. **Studio editing by hand:** trim by dragging clip edges, drag clips between tracks, zoom the timeline, and add media by dropping files. Today you move clips only within their track, and other changes go through the inspector.
+5. **Video frames without the JPEG cache.** Every video clip is cut into JPEGs before a render (0.1–0.3 MB per 1080p frame, in `.karka/frames/`, never cleaned). Stream decoded frames to the page instead, or at least clean old cache folders.
+6. **`karkataka render` engine options:** `--mode`, `--workers` and `--encoder` pass through to karka. Only `--software` passes through today.
+7. **Profile the per-frame cost.** Find how much time goes to the ~3 copies per frame and ffmpeg's CPU BGRA-to-YUV conversion before optimising them.
+8. **Fix the cef crate's CEF download upstream.** Its index download fails because the CDN's index.json is over the 10 MB limit. A fix in tauri-apps/cef-rs would let us drop `scripts/fetch-cef.sh` and the `CEF_VERSION` install step.
+9. **CI on Linux and macOS** running `cargo test` and `tests/scenes/run.sh`. The Linux path has never run.
+10. **JSON progress lines on stdout with `--json`.** `karka render --progress` prints them to stderr since 2026-11-15 (the Studio uses it); `smoke` has none.
+11. **`OnAcceleratedPaint` GPU path.** Frames go from Chromium to the encoder without a CPU copy. Only worth it after item 4.
+12. **Studio: audio in the preview, and cancelling a render.** The preview is silent, and a render stops only when the Studio tab closes (2026-11-15).
+13. **Publish to crates.io.** Bump to 0.1.0 and publish in the order in the README.
 
 ## Bench
 

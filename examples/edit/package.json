@@ -1,0 +1,17 @@
+{
+  "name": "edit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "media": "./make-media.sh",
+    "dev": "vite"
+  },
+  "devDependencies": {
+    "@karkataka/studio": "workspace:*",
+    "vite": "^8.3.8",
+    "vite-plugin-solid": "^2.11.16"
+  },
+  "dependencies": {
+    "solid-js": "^1.9.19"
+  }
+}

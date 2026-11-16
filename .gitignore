@@ -5,3 +5,4 @@ dist/
 .cef/
 out/
 *.profraw
+.karka/
