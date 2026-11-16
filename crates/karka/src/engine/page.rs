@@ -56,11 +56,12 @@ pub(crate) fn frame_script(n: u32) -> String {
     format!("window.__karkaFrame({n})")
 }
 
-/// Frame number in the marker row of a `width` x (`height` + 1) BGRA paint, if the row is drawn.
-pub(crate) fn read_marker(pixels: &[u8], width: usize, height: usize) -> Option<u32> {
+/// Frame number in the marker row of a `width` x (`height` + `scale`) BGRA paint, if the row is
+/// drawn. Sizes are in pixels; the row's cells are `MARKER_CELL * scale` pixels wide.
+pub(crate) fn read_marker(pixels: &[u8], width: usize, height: usize, scale: usize) -> Option<u32> {
     let row = &pixels[height * width * 4..(height + 1) * width * 4];
     let cell = |i: usize| -> Option<bool> {
-        let at = (i * MARKER_CELL + MARKER_CELL / 2) * 4;
+        let at = (i * MARKER_CELL + MARKER_CELL / 2) * scale * 4;
         match row[at..at + 4] {
             [b, g, r, 255] if b < 16 && g < 16 && r < 16 => Some(false),
             [b, g, r, 255] if b > 239 && g > 239 && r > 239 => Some(true),
@@ -122,17 +123,31 @@ fn reads_marker_row() {
         }
     };
     // Not drawn yet (transparent): no frame.
-    assert_eq!(read_marker(&px, w, h), None);
+    assert_eq!(read_marker(&px, w, h, 1), None);
     for i in 0..MARKER_BITS {
         set(&mut px, i, [1, 4].contains(&i));
     }
     // Sentinels swapped: the row is not trusted.
     set(&mut px, MARKER_BITS, false);
     set(&mut px, MARKER_BITS + 1, true);
-    assert_eq!(read_marker(&px, w, h), None);
+    assert_eq!(read_marker(&px, w, h, 1), None);
     set(&mut px, MARKER_BITS, true);
     set(&mut px, MARKER_BITS + 1, false);
-    assert_eq!(read_marker(&px, w, h), Some(0b10010));
+    assert_eq!(read_marker(&px, w, h, 1), Some(0b10010));
+}
+
+#[test]
+fn reads_marker_row_at_scale_2() {
+    // An 80x1 CSS px page at scale 2: 160x2 pixels, then 2 marker rows with 8-pixel cells.
+    let (w, h, scale) = (160, 2, 2);
+    let mut px = vec![0u8; w * (h + scale) * 4];
+    let white = |i: usize| i == 3 || i == MARKER_BITS;
+    for x in 0..w {
+        let v = if white(x / (MARKER_CELL * scale)) { 255 } else { 0 };
+        px[(h * w + x) * 4..][..4].copy_from_slice(&[v, v, v, 255]);
+    }
+    assert_eq!(read_marker(&px, w, h, scale), Some(0b1000));
+    assert_eq!(read_marker(&px, w, h, 1), None, "read at scale 1, the cells are in the wrong places");
 }
 
 #[test]
@@ -149,9 +164,9 @@ fn half_drawn_marker_rows_are_not_trusted() {
     };
     let (white, black) = ([255; 4], [0, 0, 0, 255]);
     // Only the first check cell is drawn.
-    assert_eq!(read_marker(&paint(&[(MARKER_BITS, white)]), w, h), None);
+    assert_eq!(read_marker(&paint(&[(MARKER_BITS, white)]), w, h, 1), None);
     // Both check cells are drawn, but the bit cells are not.
-    assert_eq!(read_marker(&paint(&[(MARKER_BITS, white), (MARKER_BITS + 1, black)]), w, h), None);
+    assert_eq!(read_marker(&paint(&[(MARKER_BITS, white), (MARKER_BITS + 1, black)]), w, h, 1), None);
 }
 
 #[test]

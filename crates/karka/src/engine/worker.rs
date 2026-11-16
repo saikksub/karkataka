@@ -85,7 +85,7 @@ fn spawn_worker(exe: &Path, job: &Job, worker: u32, workers: u32) -> Result<(Chi
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot start render worker: {e}"))?;
-    let header = format!("{} {} {} {worker} {workers} {}\n", job.width, job.height, job.frames, u8::from(job.gpu));
+    let header = format!("{} {} {} {} {worker} {workers} {}\n", job.width, job.height, job.scale, job.frames, u8::from(job.gpu));
     let mut stdin = child.stdin.take().expect("stdin is piped");
     let stdout = child.stdout.take().expect("stdout is piped");
     let sent = stdin.write_all(header.as_bytes()).and_then(|()| stdin.write_all(job.url.as_bytes()));
@@ -97,7 +97,8 @@ fn spawn_worker(exe: &Path, job: &Job, worker: u32, workers: u32) -> Result<(Chi
     }
 
     let mut stdout = BufReader::new(stdout);
-    let len = (job.width * job.height * 4) as usize;
+    let (width, height) = job.size();
+    let len = (width * height * 4) as usize;
     let (tx, rx) = sync_channel(2);
     std::thread::spawn(move || {
         // End of stream (worker done or dead) ends the channel; collect reports it if early.
@@ -146,8 +147,8 @@ pub(crate) fn run_worker() -> i32 {
     let fields: Vec<u32> = header.split_whitespace().filter_map(|f| f.parse().ok()).collect();
     let mut out = BufWriter::new(std::io::stdout());
     let result = match (parsed, fields.as_slice()) {
-        (Ok(_), &[width, height, frames, first, step, gpu]) => {
-            let job = Job { url: &url, width, height, frames, workers: 1, gpu: gpu == 1 };
+        (Ok(_), &[width, height, scale, frames, first, step, gpu]) => {
+            let job = Job { url: &url, width, height, scale, frames, workers: 1, gpu: gpu == 1 };
             browser::render_in_process(&job, first, step, |n, pixels| {
                 out.write_all(&n.to_le_bytes())
                     .and_then(|()| out.write_all(pixels))
@@ -177,7 +178,7 @@ mod tests {
     }
 
     fn job(url: &str) -> Job<'_> {
-        Job { url, width: 2, height: 1, frames: 1, workers: 2, gpu: true }
+        Job { url, width: 3, height: 1, scale: 1, frames: 100, workers: 2, gpu: true }
     }
 
     #[test]
@@ -271,16 +272,16 @@ mod tests {
         assert!(error.starts_with("cannot send the job"), "{error}");
     }
 
-    // `cat` stands in for a worker: it echoes the job back. For a 2x1 frame a record is 4 + 8
-    // bytes, and the job header "2 1 1 0 2 1\n" is exactly 12 bytes, so it reads back as one record.
-    const RECORD: &str = "0000abcdefgh";
+    // `cat` stands in for a worker: it echoes the job back. For a 3x1 frame a record is 4 + 12
+    // bytes, and the job header "3 1 1 100 0 2 1\n" is exactly 16 bytes, so it reads back as one record.
+    const RECORD: &str = "0000abcdefghijkl";
 
     #[test]
     fn spawn_worker_streams_records_until_end_of_stream() {
         let (mut child, inbox) = spawn_worker(Path::new("cat"), &job(&RECORD.repeat(2)), 0, 2).unwrap();
         let records: Vec<Record> = inbox.iter().collect();
         assert_eq!(records.len(), 3, "header + 2 records, then end of stream");
-        assert_eq!(records[1], Ok((u32::from_le_bytes(*b"0000"), b"abcdefgh".to_vec())));
+        assert_eq!(records[1], Ok((u32::from_le_bytes(*b"0000"), b"abcdefghijkl".to_vec())));
         child.wait().unwrap();
     }
 

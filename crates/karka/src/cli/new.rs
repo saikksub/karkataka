@@ -9,6 +9,8 @@ use std::path::Path;
 
 /// A scene to start from: `{Name}` becomes the scene's name.
 const SCENE: &str = include_str!("scene.tsx");
+/// The same for 9:16 phone video, with the text inside the runtime's `<SafeArea>`.
+const PHONE_SCENE: &str = include_str!("scene-phone.tsx");
 
 const GITIGNORE: &str = "out/\n.karka/\n";
 
@@ -54,7 +56,9 @@ fn add_scene(file: &Path, project: &Value, name: &str, track: Option<&str>, dura
     let created = !path.exists();
     if created {
         files::create_dir(&dir.join("scenes"))?;
-        files::write(&path, SCENE.replace("{Name}", name).as_bytes())?;
+        let phone = int(&project["width"], 1).zip(int(&project["height"], 1)).is_some_and(|(w, h)| w * 16 == h * 9);
+        let template = if phone { PHONE_SCENE } else { SCENE };
+        files::write(&path, template.replace("{Name}", name).as_bytes())?;
     }
     // On the given track, else the top one; a project with no tracks gets one.
     let mut project = project.clone();
@@ -102,7 +106,8 @@ mod tests {
         assert_eq!((project["width"].clone(), project["tracks"][0]["id"].clone()), (json!(1080), json!("V1")));
         assert_eq!(project["tracks"][0]["clips"][0]["component"], "scenes/Hello.tsx");
         assert_eq!(project["tracks"][0]["clips"][0]["duration"], 90);
-        assert!(std::fs::read_to_string(dir.join("scenes/Hello.tsx")).unwrap().contains("export default function Hello("));
+        let hello = std::fs::read_to_string(dir.join("scenes/Hello.tsx")).unwrap();
+        assert!(hello.contains("export default function Hello(") && hello.contains("<SafeArea>"), "9:16 gets the phone scene");
         assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), GITIGNORE);
         assert!(dir.join("tsconfig.json").exists());
         assert!(new(&dir, &Map::new(), false, false).unwrap_err().error.ends_with("exists; pass --force to replace it"));
@@ -117,6 +122,7 @@ mod tests {
         let dir = tmp("scene");
         new(&dir, &Map::new(), false, false).unwrap();
         let added = scene(&dir, "Outro", None, Some(45)).unwrap();
+        assert!(!std::fs::read_to_string(dir.join("scenes/Outro.tsx")).unwrap().contains("SafeArea"), "16:9 gets the plain scene");
         assert_eq!((added["scene"].clone(), added["created"].clone(), added["clip"]["start"].clone(), added["clip"]["duration"].clone()), (json!("scenes/Outro.tsx"), json!(true), json!(90), json!(45)));
         assert_eq!(added["duration"], 135);
         // An existing scene file is used as it is.

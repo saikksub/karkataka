@@ -39,7 +39,8 @@ where
     #[cfg(target_os = "macos")]
     let _loader = {
         // The framework sits in the .app bundle, next to the executable (see `bundle-karka`).
-        let exe = std::env::current_exe().ok().ok_or("cannot find the karka executable")?;
+        // Resolved, so a symlink on PATH (`karka install`) still finds the bundle.
+        let exe = std::env::current_exe().and_then(std::fs::canonicalize).ok().ok_or("cannot find the karka executable")?;
         // The cef crate's loader panics when the framework is missing, so look for it first.
         let framework = exe.with_file_name("../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework");
         ensure(framework.exists(), "cannot find the CEF framework; run karka from its .app bundle")?;
@@ -91,8 +92,10 @@ fn ensure(ok: bool, error: &str) -> Result<(), String> {
 struct State {
     frames: u32,
     step: u32,
+    /// The output size in pixels (`Job::size`).
     width: usize,
     height: usize,
+    scale: usize,
     /// Frame currently being produced.
     n: u32,
     started: bool,
@@ -115,8 +118,9 @@ fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<Opti
     let state: Shared = Rc::new(RefCell::new(State {
         frames: job.frames,
         step,
-        width: job.width as usize,
-        height: job.height as usize,
+        width: job.size().0 as usize,
+        height: job.size().1 as usize,
+        scale: job.scale as usize,
         n: first,
         started: false,
         begin_frames: 0,
@@ -134,8 +138,8 @@ fn drive(job: &Job, first: u32, step: u32, tx: SyncSender<Frame>) -> Result<Opti
     };
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
     let mut client = KarkaClient::new(
-        // One extra row holds the frame marker.
-        KarkaRender::new(state.clone(), job.width as c_int, job.height as c_int + 1),
+        // One extra row (CSS px) holds the frame marker.
+        KarkaRender::new(state.clone(), job.width as c_int, job.height as c_int + 1, job.scale as f32),
         KarkaLoad::new(state.clone(), job.height),
         KarkaLifeSpan::new(),
         KarkaDisplay::new(state.clone()),
@@ -342,6 +346,7 @@ wrap_render_handler! {
         state: Shared,
         width: c_int,
         height: c_int,
+        scale: f32,
     }
 
     impl RenderHandler {
@@ -354,8 +359,8 @@ wrap_render_handler! {
 
         fn screen_info(&self, _browser: Option<&mut Browser>, screen_info: Option<&mut ScreenInfo>) -> c_int {
             let Some(screen_info) = screen_info else { return 0 };
-            // 1 CSS px = 1 output px, whatever the host display is.
-            screen_info.device_scale_factor = 1.0;
+            // `scale` output px per CSS px, whatever the host display is.
+            screen_info.device_scale_factor = self.scale;
             1
         }
 
@@ -372,24 +377,25 @@ wrap_render_handler! {
             if type_ != PaintElementType::default() || buffer.is_null() {
                 return;
             }
-            let (n, w, h, active) = {
+            let (n, w, h, scale, active) = {
                 let s = self.state.borrow();
-                (s.n, s.width, s.height, s.started && s.n < s.frames && s.error.is_none())
+                (s.n, s.width, s.height, s.scale, s.started && s.n < s.frames && s.error.is_none())
             };
             // Paints before the first frame starts or after the last one (while closing) are not ours.
             if !active {
                 return;
             }
-            if (width as usize, height as usize) != (w, h + 1) {
-                return fail(&self.state, browser, format!("frame {n}: paint is {width}x{height}, expected {w}x{}", h + 1));
+            // The marker row is 1 CSS px, so `scale` rows of pixels.
+            if (width as usize, height as usize) != (w, h + scale) {
+                return fail(&self.state, browser, format!("frame {n}: paint is {width}x{height}, expected {w}x{}", h + scale));
             }
             {
                 let mut s = self.state.borrow_mut();
                 s.painted_at = s.begin_frames;
             }
             // SAFETY: CEF passes a BGRA buffer of width*height*4 bytes, valid for this call.
-            let pixels = unsafe { std::slice::from_raw_parts(buffer, w * (h + 1) * 4) };
-            if page::read_marker(pixels, w, h) == Some(n) {
+            let pixels = unsafe { std::slice::from_raw_parts(buffer, w * (h + scale) * 4) };
+            if page::read_marker(pixels, w, h, scale) == Some(n) {
                 emit(&self.state, browser, pixels[..w * h * 4].to_vec());
             } else if !std::mem::replace(&mut self.state.borrow_mut().redraw_pending, true) {
                 // An older frame (or nothing yet): draw again, a little later and from a fresh

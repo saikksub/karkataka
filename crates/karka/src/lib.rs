@@ -4,11 +4,13 @@
 //! - `engine`: renders a web page frame by frame in offscreen Chromium (CEF), to raw pixels.
 //! - `encode`: pipes raw frames into FFmpeg.
 //! - `audio`: mixes audio clips and muxes them into the video.
+//! - `progress`: the stage lines and frame bar a person sees during `karka render`.
 
 pub mod audio;
 pub mod cli;
 pub mod encode;
 pub mod engine;
 pub mod files;
+pub mod progress;
 pub mod project;
 pub mod render;

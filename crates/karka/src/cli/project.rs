@@ -191,13 +191,13 @@ pub fn out_dir(path: &Path) -> (PathBuf, String) {
 fn with_page<T>(prepared: &crate::project::page::Prepared, run: impl FnOnce(render::Page) -> Result<T, String>) -> Result<T, String> {
     let project = &prepared.project;
     let size = |k: &str| p::int(&project[k], 0).unwrap_or(0) as u32;
-    let page = render::Page { path: &prepared.page, frames: prepared.duration as u32, props: "{}", width: size("width"), height: size("height"), fps: size("fps") };
+    let page = render::Page { path: &prepared.page, frames: prepared.duration as u32, props: "{}", width: size("width"), height: size("height"), scale: 1, fps: size("fps") };
     let result = run(page);
     let _ = std::fs::remove_file(&prepared.page);
     result
 }
 
-pub fn still(path: &Path, frame: u32, out: Option<&Path>, gpu: bool) -> Result<Value, Failure> {
+pub fn still(path: &Path, frame: u32, out: Option<&Path>, scale: u32, gpu: bool) -> Result<Value, Failure> {
     let prepared = prepare(path, |duration| {
         if u64::from(frame) >= duration {
             return Err(format!("frame must be from 0 to {} (got {frame})", duration - 1));
@@ -206,7 +206,7 @@ pub fn still(path: &Path, frame: u32, out: Option<&Path>, gpu: bool) -> Result<V
     })?;
     let (dir, name) = out_dir(path);
     let out = out.map_or_else(|| dir.join(format!("{name}-{frame}.png")), Path::to_path_buf);
-    Ok(with_page(&prepared, |page| render::still(&page, frame, &out, gpu))?)
+    Ok(with_page(&prepared, |page| render::still(&render::Page { scale, ..page }, frame, &out, gpu))?)
 }
 
 pub struct RenderArgs<'a> {
@@ -215,6 +215,7 @@ pub struct RenderArgs<'a> {
     pub encoder: Option<&'a str>,
     /// Picks the worker count for the project's length, and says why.
     pub workers: &'a dyn Fn(u32) -> Result<(u32, String), String>,
+    pub scale: u32,
     pub gpu: bool,
 }
 
@@ -223,7 +224,7 @@ pub fn render_project(path: &Path, args: RenderArgs) -> Result<Value, Failure> {
     let (dir, name) = out_dir(path);
     let out = args.out.map_or_else(|| dir.join(format!("{name}.mp4")), Path::to_path_buf);
     let (workers, why) = (args.workers)(prepared.duration as u32)?;
-    Ok(with_page(&prepared, |page| render::run(render::Options { page, out: &out, progress: args.progress, encoder: args.encoder, workers, workers_why: why, gpu: args.gpu }))?)
+    Ok(with_page(&prepared, |page| render::run(render::Options { page: render::Page { scale: args.scale, ..page }, out: &out, progress: args.progress, encoder: args.encoder, workers, workers_why: why, gpu: args.gpu }))?)
 }
 
 #[cfg(test)]

@@ -82,6 +82,7 @@ pub fn extract_frames(src: &Path, range: &FrameRange, cache: &Path) -> Result<(P
     if !dir.join(".done").exists() {
         let _ = std::fs::remove_dir_all(&dir);
         crate::files::create_dir(&dir)?;
+        crate::progress::stage(&format!("Cutting {} frames of {} (cached for next time)", range.count, src.display()));
         let (w, h) = (range.width, range.height);
         let scale = match range.fit.as_str() {
             "contain" => format!("scale={w}:{h}:force_original_aspect_ratio=decrease"),

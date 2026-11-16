@@ -29,6 +29,9 @@ enum Command {
     /// Make a project folder: project.json, scenes/Hello.tsx, media/, types for code editors
     New {
         dir: PathBuf,
+        /// A common size [default: landscape]. --width and --height set any other size
+        #[arg(long, value_enum, conflicts_with_all = ["width", "height"])]
+        size: Option<Size>,
         #[arg(long)]
         width: Option<u64>,
         #[arg(long)]
@@ -125,6 +128,10 @@ enum Command {
         /// PNG file [default: out/<project>-<frame>.png next to the project]
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Pixels per project pixel, 1 to 4: 2 renders 1920x1080 as 3840x2160 (4K). Text and
+        /// shapes stay sharp; images and video are upscaled
+        #[arg(long, default_value_t = 1)]
+        scale: u32,
         /// Paint on the CPU instead of the GPU
         #[arg(long)]
         software: bool,
@@ -140,6 +147,10 @@ enum Command {
         /// Print a JSON line to stderr as each frame is done: {"frame": <frames done>, "frames": <total>}
         #[arg(long)]
         progress: bool,
+        /// Pixels per project pixel, 1 to 4: 2 renders 1920x1080 as 3840x2160 (4K). Text and
+        /// shapes stay sharp; images and video are upscaled
+        #[arg(long, default_value_t = 1)]
+        scale: u32,
         #[command(flatten)]
         page: PageArgs,
         #[command(flatten)]
@@ -188,7 +199,7 @@ struct PageArgs {
 }
 
 impl PageArgs {
-    fn page<'a>(&'a self, path: &'a Path) -> Result<render::Page<'a>, String> {
+    fn page<'a>(&'a self, path: &'a Path, scale: u32) -> Result<render::Page<'a>, String> {
         let fps = self.fps.unwrap_or(30);
         if fps == 0 {
             return Err("--fps must be at least 1".into());
@@ -199,6 +210,7 @@ impl PageArgs {
             props: self.props.as_deref().unwrap_or("{}"),
             width: self.width.unwrap_or(1920),
             height: self.height.unwrap_or(1080),
+            scale,
             fps,
         })
     }
@@ -229,6 +241,30 @@ struct EngineArgs {
     /// Paint on the CPU instead of the GPU
     #[arg(long)]
     software: bool,
+}
+
+/// `karka new --size`.
+#[derive(Clone, Copy, ValueEnum)]
+enum Size {
+    /// 1920x1080 (16:9): YouTube, desktop
+    Landscape,
+    /// 1080x1920 (9:16): Reels, Shorts, TikTok
+    Phone,
+    /// 1080x1080: feed posts
+    Square,
+    /// 1080x1350 (4:5): Instagram portrait posts
+    Portrait,
+}
+
+impl Size {
+    fn pixels(self) -> (u64, u64) {
+        match self {
+            Size::Landscape => (1920, 1080),
+            Size::Phone => (1080, 1920),
+            Size::Square => (1080, 1080),
+            Size::Portrait => (1080, 1350),
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -294,7 +330,11 @@ pub fn main() -> ExitCode {
 fn run(command: Command) -> Result<Value, Failure> {
     let settings = |pairs: [(&str, Option<Value>); 4]| pairs.into_iter().filter_map(|(k, v)| Some((k.to_string(), v?))).collect();
     match command {
-        Command::New { dir, width, height, fps, background, force, empty } => {
+        Command::New { dir, size, width, height, fps, background, force, empty } => {
+            let (width, height) = match size.map(Size::pixels) {
+                Some((w, h)) => (Some(w), Some(h)),
+                None => (width, height),
+            };
             new::new(&dir, &settings([("width", width.map(Value::from)), ("height", height.map(Value::from)), ("fps", fps.map(Value::from)), ("background", background.map(Value::from))]), force, empty)
         }
         Command::Scene { project, name, track, duration } => new::scene(&project, &name, track.as_deref(), duration),
@@ -308,26 +348,35 @@ fn run(command: Command) -> Result<Value, Failure> {
         Command::Move { project, clip, start, track } => project::move_clip(&project, &clip, start, track.as_deref()),
         Command::Split { project, clip, at } => project::split(&project, &clip, at),
         Command::Remove { project, id } => project::remove(&project, &id),
-        Command::Still { target, frame, out, software, page } if is_page(&target) => {
+        Command::Still { target, frame, out, scale, software, page } if is_page(&target) => {
             let out = out.unwrap_or(PathBuf::from("out/still.png"));
-            Ok(page.page(&target).and_then(|p| render::still(&p, frame, &out, !software))?)
+            Ok(page.page(&target, scale).and_then(|p| render::still(&p, frame, &out, !software))?)
         }
-        Command::Still { target, frame, out, software, page } => {
+        Command::Still { target, frame, out, scale, software, page } => {
             page.none_for_project()?;
             types::ensure(&crate::project::page::locate(&target).1)?;
-            project::still(&target, frame, out.as_deref(), !software)
+            project::still(&target, frame, out.as_deref(), scale, !software)
         }
-        Command::Render { target, out, progress, page, engine } if is_page(&target) => {
-            let out = out.unwrap_or(PathBuf::from("out/render.mp4"));
-            let page = page.page(&target)?;
-            let (workers, why) = engine.workers(page.frames)?;
-            Ok(render::run(render::Options { page, out: &out, progress, encoder: engine.encoder.as_deref(), workers, workers_why: why, gpu: !engine.software })?)
-        }
-        Command::Render { target, out, progress, page, engine } => {
-            page.none_for_project()?;
-            types::ensure(&crate::project::page::locate(&target).1)?;
-            let workers = |frames| engine.workers(frames);
-            project::render_project(&target, project::RenderArgs { out: out.as_deref(), progress, encoder: engine.encoder.as_deref(), workers: &workers, gpu: !engine.software })
+        Command::Render { target, out, progress, scale, page, engine } => {
+            // The bar is for people: JSON progress lines replace it, and pipes never get it.
+            crate::progress::show(!progress && std::io::IsTerminal::is_terminal(&std::io::stderr()));
+            let (started, clock) = (std::time::SystemTime::now(), std::time::Instant::now());
+            let mut result = if is_page(&target) {
+                let out = out.unwrap_or(PathBuf::from("out/render.mp4"));
+                let page = page.page(&target, scale)?;
+                let (workers, why) = engine.workers(page.frames)?;
+                render::run(render::Options { page, out: &out, progress, encoder: engine.encoder.as_deref(), workers, workers_why: why, gpu: !engine.software })?
+            } else {
+                page.none_for_project()?;
+                types::ensure(&crate::project::page::locate(&target).1)?;
+                let workers = |frames| engine.workers(frames);
+                project::render_project(&target, project::RenderArgs { out: out.as_deref(), progress, encoder: engine.encoder.as_deref(), workers: &workers, scale, gpu: !engine.software })?
+            };
+            // The whole command: cutting video frames, rendering, encoding and mixing audio.
+            result["started_at"] = json!(crate::progress::utc(started));
+            result["finished_at"] = json!(crate::progress::utc(std::time::SystemTime::now()));
+            result["elapsed_secs"] = json!((clock.elapsed().as_secs_f64() * 100.0).round() / 100.0);
+            Ok(result)
         }
         Command::Studio { project, port } => {
             types::ensure(&crate::project::page::locate(&project).1)?;
@@ -369,6 +418,17 @@ fn choose_workers(mode: Mode, workers: Option<u32>, frames: u32, plan: impl FnOn
 fn cli_definition_is_valid() {
     use clap::CommandFactory;
     Cli::command().debug_assert();
+}
+
+#[test]
+fn size_presets_and_scale_parse() {
+    let new = |args: &[&str]| Cli::try_parse_from([&["karka", "new", "p"], args].concat());
+    let Ok(Cli { command: Command::New { size: Some(size), .. }, .. }) = new(&["--size", "phone"]) else { panic!("--size phone") };
+    assert_eq!(size.pixels(), (1080, 1920));
+    assert_eq!([Size::Landscape, Size::Square, Size::Portrait].map(Size::pixels), [(1920, 1080), (1080, 1080), (1080, 1350)]);
+    assert!(new(&["--size", "phone", "--width", "720"]).is_err(), "a preset or a size, not both");
+    let render = Cli::try_parse_from(["karka", "render", "p", "--scale", "2"]);
+    assert!(matches!(render, Ok(Cli { command: Command::Render { scale: 2, .. }, .. })));
 }
 
 #[test]

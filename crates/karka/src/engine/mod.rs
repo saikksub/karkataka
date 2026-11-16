@@ -16,6 +16,8 @@ pub use page::{data_url, file_url};
 const MAX_FRAMES: u32 = 1 << 16;
 /// The marker row is 18 cells of 4 px.
 const MIN_WIDTH: u32 = 72;
+/// Largest `Job::scale`.
+const MAX_SCALE: u32 = 4;
 
 /// What to render.
 #[derive(Clone, Copy)]
@@ -24,13 +26,24 @@ pub struct Job<'a> {
     /// `window.__setFrame(n)`, which draws frame `n` (the same `n` always gives the same picture),
     /// either right away or by returning a promise.
     pub url: &'a str,
+    /// The page's size in CSS px.
     pub width: u32,
     pub height: u32,
+    /// Output pixels per CSS px (1 to 4): frames are `width * scale` x `height * scale`. Text and
+    /// shapes stay sharp; images are upscaled. See `Job::size`.
+    pub scale: u32,
     pub frames: u32,
     /// Processes rendering in parallel, each with its own browser.
     pub workers: u32,
     /// GPU raster and compositing. `false` uses Chromium's CPU (software) compositing.
     pub gpu: bool,
+}
+
+impl Job<'_> {
+    /// The size of the frames it renders, in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        (self.width * self.scale, self.height * self.scale)
+    }
 }
 
 /// Run this first in `main`, before parsing arguments. CEF relaunches the executable for its
@@ -80,6 +93,9 @@ fn check(job: &Job) -> Result<(), String> {
     if job.width < MIN_WIDTH || job.height == 0 {
         return Err(format!("the video must be at least {MIN_WIDTH} px wide and 1 px tall (got {}x{})", job.width, job.height));
     }
+    if !(1..=MAX_SCALE).contains(&job.scale) {
+        return Err(format!("scale must be from 1 to {MAX_SCALE} (got {})", job.scale));
+    }
     if job.frames > MAX_FRAMES {
         return Err(format!("at most {MAX_FRAMES} frames per render (got {})", job.frames));
     }
@@ -88,8 +104,11 @@ fn check(job: &Job) -> Result<(), String> {
 
 #[test]
 fn rejects_sizes_and_lengths_it_cannot_render() {
-    let job = Job { url: "", width: 1920, height: 1080, frames: 10, workers: 1, gpu: true };
+    let job = Job { url: "", width: 1920, height: 1080, scale: 1, frames: 10, workers: 1, gpu: true };
     assert!(check(&job).is_ok());
+    assert_eq!(Job { scale: 2, ..job }.size(), (3840, 2160));
+    assert!(check(&Job { scale: 0, ..job }).unwrap_err().contains("from 1 to 4"));
+    assert!(check(&Job { scale: 5, ..job }).is_err());
     assert!(check(&Job { width: 71, ..job }).unwrap_err().contains("72 px"));
     assert!(check(&Job { height: 0, ..job }).is_err());
     assert!(check(&Job { frames: MAX_FRAMES + 1, ..job }).unwrap_err().contains("65536"));

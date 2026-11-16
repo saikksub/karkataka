@@ -27,6 +27,12 @@ if [[ $(uname -s) == Darwin ]]; then
   if "$CARGO_TARGET_DIR/debug/bundle-karka" /dev/null/app >/dev/null 2>&1; then
     echo "bundle-karka into an impossible folder did not fail" >&2; exit 1
   fi
+  # A release app too (what scripts/install.sh installs), and it runs.
+  cargo run -q -p karka --bin bundle-karka -- "$CARGO_TARGET_DIR/bundle-release" --release >/dev/null
+  "$CARGO_TARGET_DIR/bundle-release/karka.app/Contents/MacOS/karka" --version >/dev/null
+  if CARGO=false "$CARGO_TARGET_DIR/debug/bundle-karka" "$out/no-app" --release >/dev/null 2>&1; then
+    echo "bundle-karka --release with a failing cargo build did not fail" >&2; exit 1
+  fi
   export KARKA=$CARGO_TARGET_DIR/bundle/karka.app/Contents/MacOS/karka
 else
   cargo build -q -p karka --bins
@@ -118,6 +124,7 @@ k() { "$KARKA" --json "$@"; }
 ok() { "$@" | grep -q '"ok":true' || { echo "failed: $*" >&2; exit 1; }; }
 ok k new "$P" --width 640 --height 360 --fps 10 --background "#111"
 ok k new "$P" --empty --force
+ok k new "$out/phone" --size phone
 ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=320x180:rate=10:duration=2 -f lavfi -i sine=duration=2 -shortest "$P/media/clip.mp4"
 ffmpeg -loglevel error -y -f lavfi -i color=c=blue:size=64x64 -frames:v 1 "$P/media/logo.png"
 ok k add-track "$P" --id V1 --name Video
@@ -190,7 +197,7 @@ echo "relative TMPDIR ok"
 # Render workers run directly: no job, and a parent that stops listening.
 if KARKA_WORKER=1 "$KARKA" </dev/null >/dev/null 2>&1; then echo "worker without a job did not fail" >&2; exit 1; fi
 # (The worker is expected to fail, so the pipeline's exit status is ignored.)
-printf '1080 1920 2 0 1 0\ndata:text/html,%%3Cscript%%3Ewindow.__setFrame%%3D()%%3D%%3E%%7B%%7D%%3C%%2Fscript%%3E' | KARKA_WORKER=1 "$KARKA" 2>/dev/null | true || true
+printf '1080 1920 1 2 0 1 0\ndata:text/html,%%3Cscript%%3Ewindow.__setFrame%%3D()%%3D%%3E%%7B%%7D%%3C%%2Fscript%%3E' | KARKA_WORKER=1 "$KARKA" 2>/dev/null | true || true
 echo "error path ok: worker without a job, worker whose parent stops listening"
 
 # Human-readable output, success and error.

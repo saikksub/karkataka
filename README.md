@@ -8,23 +8,24 @@ Video editing from the command line, for people and AI agents. A video is a **pr
 
 `karka` is one Rust binary. It renders with offscreen Chromium and encodes on the GPU, about 2x faster than Remotion on our benchmark. Your scenes compile inside that Chromium, so using karka needs no Node.js, npm or build step. You need FFmpeg.
 
-> **Status: early development.** Projects, scenes, stills, rendering (any size and frame rate, with sound) and the Studio work on macOS. Linux has never run. The crate is [on crates.io](https://crates.io/crates/karka) for [use as a library](#use-the-engine-as-a-library), but to use the `karka` command, build it from source as below: `cargo install karka` gives a binary that cannot start Chromium on macOS, because CEF only runs from inside an `.app`. See [Roadmap](#roadmap).
+> **Status: early development.** Projects, scenes, stills, rendering (any size and frame rate, with sound) and the Studio work on macOS. Linux has never run. The crate is [on crates.io](https://crates.io/crates/karka) for [use as a library](#use-the-engine-as-a-library), but to use the `karka` command, install it from source with `scripts/install.sh` (below): `cargo install karka` gives a binary that cannot start Chromium on macOS, because CEF only runs from inside an `.app`. See [Roadmap](#roadmap).
 
 ## Getting started
 
-On macOS, with [Rust](https://rustup.rs) and [Homebrew](https://brew.sh) installed. This takes a few minutes, most of it downloading Chromium (about 135 MB) and building:
+On macOS, with [Rust](https://rustup.rs) and [Homebrew](https://brew.sh) installed. Installing takes a few minutes, most of it downloading Chromium (about 135 MB) and building:
 
 ```bash
 brew install ffmpeg
 git clone https://github.com/saikksub/karkataka && cd karkataka
-./scripts/fetch-cef.sh                       # Chromium for karka
-cargo run -p karka --bin bundle-karka        # builds target/bundle/karka.app
-alias karka=$PWD/target/bundle/karka.app/Contents/MacOS/karka
+scripts/install.sh                            # installs the karka command for your user
 
-karka new ~/my-video                          # a project with one scene
-karka render ~/my-video                       # ~/my-video/out/my-video.mp4
+karka new ~/my-video                          # a 1920x1080 project with one scene (--size phone for 9:16)
+karka render ~/my-video                       # ~/my-video/out/my-video.mp4, with a progress bar
+karka render ~/my-video --scale 2             # the same video in 4K
 karka studio ~/my-video                       # edit it at http://127.0.0.1:4000/
 ```
+
+If the installer says so, add `~/.local/bin` to your PATH first.
 
 Then edit `scenes/Hello.tsx` in your code editor and watch the Studio update. [Setup](#setup) explains each step, and [Quick start](#quick-start) shows what to do next.
 
@@ -62,23 +63,18 @@ cd karkataka
 ./scripts/fetch-cef.sh
 ```
 
-**3. macOS only: create the app bundle.** On macOS, CEF only runs from inside an `.app`. This creates `target/bundle/karka.app`:
+**3. Install the `karka` command**, so it works from any folder:
 
 ```bash
-cargo run -p karka --bin bundle-karka
+scripts/install.sh
 ```
+
+On macOS this builds a release `karka.app` into `~/.karka` (CEF only runs from inside an `.app`) and links `~/.local/bin/karka` to the binary inside it. On Linux it builds a release `karka` and writes `~/.local/bin/karka`, a small script that runs it with CEF's libraries. Set `KARKA_HOME` or `KARKA_BIN` to install somewhere else. If `~/.local/bin` is not on your PATH, the installer prints the line to add to `~/.zshrc`. Run it again after a `git pull` to update.
 
 **4. Check that it works.** This renders a built-in test page for 300 frames, checks every frame, and writes `out/frame0.png` and `out/smoke.mp4`:
 
 ```bash
-target/bundle/karka.app/Contents/MacOS/karka smoke --out out    # macOS
-cargo run --release -p karka -- smoke --out out                  # Linux
-```
-
-**5. Put `karka` on your PATH**, so the commands below work from anywhere:
-
-```bash
-alias karka=$PWD/target/bundle/karka.app/Contents/MacOS/karka    # macOS (add it to ~/.zshrc)
+karka smoke --out out
 ```
 
 ## Quick start
@@ -197,7 +193,7 @@ Paths can be a project folder or its `.json` file. Add `--json` to any command t
 
 | Command | What it does |
 |---|---|
-| `new <dir> [--width --height --fps --background] [--empty] [--force]` | A project folder: `project.json` with a starter scene clip (none with `--empty`), `scenes/Hello.tsx`, `media/`, and editor types. The default is 1920x1080 at 30 fps. |
+| `new <dir> [--size \| --width --height] [--fps --background] [--empty] [--force]` | A project folder: `project.json` with a starter scene clip (none with `--empty`), `scenes/Hello.tsx`, `media/`, and editor types. `--size` is `landscape` (1920x1080, the default), `phone` (1080x1920), `square` (1080x1080) or `portrait` (1080x1350); `--width` and `--height` set any other size. 30 fps by default. In a 9:16 project, new scenes put their text inside `<SafeArea>`. |
 | `scene <project> <Name> [--track] [--duration]` | `scenes/<Name>.tsx` from a template (kept if it exists) and a clip that shows it, after the track's last clip. |
 | `show <project>` | The project, its length and its problems. |
 | `validate <project>` | Fails with every problem, if there are any. |
@@ -209,12 +205,14 @@ Paths can be a project folder or its `.json` file. Add `--json` to any command t
 | `move <project> <clip> [--start <frame>] [--track <id>]` | Move a clip in time, to another track, or both. |
 | `split <project> <clip> --at <frame>` | Cut a clip in two. The second part carries on in the source. |
 | `remove <project> <clip\|track>` | Remove a clip, or a track with its clips. |
-| `still <project> [--frame 0] [--out]` | One frame as PNG (default `out/<name>-<frame>.png` in the project). |
-| `render <project> [--out] [--progress]` | The MP4, with sound (default `out/<name>.mp4`). `--progress` prints `{"frame": n, "frames": total}` lines to stderr. |
+| `still <project> [--frame 0] [--out] [--scale 1]` | One frame as PNG (default `out/<name>-<frame>.png` in the project). |
+| `render <project> [--out] [--scale 1] [--progress]` | The MP4, with sound (default `out/<name>.mp4`). In a terminal it shows what it is doing and a progress bar (frames, elapsed time, speed, time left) on stderr. `--progress` prints `{"frame": n, "frames": total}` lines to stderr instead, for programs. The result includes `started_at` and `finished_at` (UTC, ISO 8601) and `elapsed_secs` for the whole command. |
 | `studio <project> [--port 4000]` | The Studio, at `http://127.0.0.1:4000/`. |
 | `smoke [--page] [--frames] [--out]` | The engine self-test: renders a 1080x1920 page, checks every frame, and writes `frame0.png` and `smoke.mp4`. |
 
 Values in `key=value` are JSON when they parse as JSON (`30`, `true`, `null`, `{"x":0}`), and text otherwise. A text field keeps what was typed, so `text=2024` stays text. Dotted keys set nested fields: `style.fontSize=96`, `props.title="..."`.
+
+**Bigger output with `--scale`.** `still` and `render` take `--scale 2` (up to 4), which renders the project at 2x its size: a 1920x1080 project becomes a 3840x2160 (4K) video, and a 1080x1920 one becomes 2160x3840. The layout stays the same; text, shapes and CSS are drawn sharp at the bigger size, while images and video clips are scaled up. To make a project 4K for good instead, set its size: `karka set . project width=3840 height=2160`, and size the scenes for it.
 
 `still`, `render` and `smoke` take `--software`, which paints on the CPU (faster for most videos; the GPU is faster for 3D transforms and filters). `render` and `smoke` also take:
 - `--mode auto|single|multi`: `auto` (default) picks the number of browser processes from the CPU cores and free memory;
@@ -265,18 +263,10 @@ pnpm typecheck
 
 After changing any of them, rebuild with `pnpm assets` and commit `crates/karka/assets/`. That is what lets `cargo install` work without Node.
 
-**2. Build a release binary.** On macOS, also copy it into the app bundle, because the scene tests and benchmarks run the app. Delete each old file before copying; copying over it makes macOS kill the app on launch (exit code 137).
+**2. Build a release app** (macOS), which the scene tests and benchmarks run. It replaces `target/bundle/karka.app`:
 
 ```bash
-cargo build --release -p karka --bins
-
-# macOS only: refresh the app bundle
-B=target/bundle/karka.app/Contents
-rm -f $B/MacOS/karka && cp target/release/karka $B/MacOS/karka
-for h in $B/Frameworks/karka\ Helper*.app; do
-  n=$(basename "$h" .app)
-  rm -f "$h/Contents/MacOS/$n" && cp target/release/karka_helper "$h/Contents/MacOS/$n"
-done
+cargo run -p karka --bin bundle-karka -- --release    # Linux: cargo build --release -p karka
 ```
 
 **3. Run the scene tests** (about 5 minutes):
@@ -389,7 +379,7 @@ fn main() -> Result<(), String> {
     let mut video = Encoder::spawn("out.mp4".as_ref(), 1080, 1920, 30, default_h264_encoder())?;
     // Let the engine pick how many browser processes this machine can run.
     let workers = karka::engine::probe::plan(&karka::engine::probe::probe(), 300).workers;
-    let job = karka::engine::Job { url: &url, width: 1080, height: 1920, frames: 300, workers, gpu: true };
+    let job = karka::engine::Job { url: &url, width: 1080, height: 1920, scale: 1, frames: 300, workers, gpu: true };
     karka::engine::render(&job, |_frame, bgra| video.write_frame(bgra))?;
     video.finish()
 }
@@ -424,7 +414,7 @@ examples/
 tests/scenes/            Animation pages rendered in every mode
 tests/examples/          End-to-end tests: edit.sh (an agent's workflow) and c-quiz.sh
 bench/                   Benchmark against Remotion
-scripts/                 fetch-cef.sh, coverage.sh
+scripts/                 install.sh, fetch-cef.sh, coverage.sh
 next-action-item.md      What we are doing next, and what is blocked
 ```
 

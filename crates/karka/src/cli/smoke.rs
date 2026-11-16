@@ -44,6 +44,7 @@ pub fn run(opts: Options) -> Result<Value, String> {
         url: &url,
         width: WIDTH,
         height: HEIGHT,
+        scale: 1,
         frames: opts.frames,
         workers: opts.workers,
         gpu: opts.gpu,

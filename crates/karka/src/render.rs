@@ -11,9 +11,17 @@ pub struct Page<'a> {
     pub frames: u32,
     /// JSON from `--props`.
     pub props: &'a str,
+    /// The page's size in CSS px; the video is `scale` times larger (see `engine::Job::scale`).
     pub width: u32,
     pub height: u32,
+    pub scale: u32,
     pub fps: u32,
+}
+
+impl Page<'_> {
+    fn job<'a>(&self, url: &'a str, workers: u32, gpu: bool) -> crate::engine::Job<'a> {
+        crate::engine::Job { url, width: self.width, height: self.height, scale: self.scale, frames: self.frames, workers, gpu }
+    }
 }
 
 pub struct Options<'a> {
@@ -29,31 +37,41 @@ pub struct Options<'a> {
 
 pub fn run(opts: Options) -> Result<Value, String> {
     let page = &opts.page;
-    // yuv420p video, which every player supports, needs even sizes.
-    if page.width % 2 == 1 || page.height % 2 == 1 {
-        return Err(format!("video width and height must be even (got {}x{})", page.width, page.height));
-    }
     let loaded = load(page)?;
+    let job = page.job(&loaded.url, opts.workers, opts.gpu);
+    let (width, height) = job.size();
+    // yuv420p video, which every player supports, needs even sizes.
+    if width % 2 == 1 || height % 2 == 1 {
+        return Err(format!("video width and height must be even (got {width}x{height})"));
+    }
     create_parent(opts.out)?;
     let encoder = opts.encoder.unwrap_or(crate::encode::default_h264_encoder());
-    let mut video = crate::encode::Encoder::spawn(opts.out, page.width, page.height, page.fps, encoder)?;
+    let mut video = crate::encode::Encoder::spawn(opts.out, width, height, page.fps, encoder)?;
+    crate::progress::stage(&format!("Starting Chromium and loading the page ({width}x{height}, {} frames, {} worker{})", page.frames, opts.workers, if opts.workers == 1 { "" } else { "s" }));
     let started = std::time::Instant::now();
-    let job = crate::engine::Job { url: &loaded.url, width: page.width, height: page.height, frames: page.frames, workers: opts.workers, gpu: opts.gpu };
+    let mut first_done = None;
     let report = crate::engine::render(&job, |n, bgra| {
         video.write_frame(bgra)?;
         if opts.progress {
             eprintln!(r#"{{"frame":{},"frames":{}}}"#, n + 1, page.frames);
         }
+        let first = *first_done.get_or_insert_with(std::time::Instant::now);
+        crate::progress::frames(n + 1, page.frames, first.elapsed());
         Ok(())
     })?;
     let render_secs = started.elapsed().as_secs_f64();
     video.finish()?;
     let clips = audio_clips(report.as_deref(), page.path, page.frames, page.fps)?;
+    if !clips.is_empty() {
+        crate::progress::stage(&format!("Mixing audio ({} clip{})", clips.len(), if clips.len() == 1 { "" } else { "s" }));
+    }
     crate::audio::add_audio(opts.out, &clips)?;
+    crate::progress::stage(&format!("Wrote {}", opts.out.display()));
     Ok(json!({
         "frames": page.frames,
-        "width": page.width,
-        "height": page.height,
+        "width": width,
+        "height": height,
+        "scale": page.scale,
         "fps": page.fps,
         "audio_clips": clips.len(),
         "mp4": opts.out,
@@ -68,11 +86,12 @@ pub fn run(opts: Options) -> Result<Value, String> {
 /// `karka still`: frame `frame` of the page as a PNG.
 pub fn still(page: &Page, frame: u32, out: &Path, gpu: bool) -> Result<Value, String> {
     let loaded = load(page)?;
-    let job = crate::engine::Job { url: &loaded.url, width: page.width, height: page.height, frames: page.frames, workers: 1, gpu };
+    let job = page.job(&loaded.url, 1, gpu);
     let pixels = crate::engine::render_frame(&job, frame)?;
+    let (width, height) = job.size();
     create_parent(out)?;
-    write_png(out, page.width, page.height, &pixels)?;
-    Ok(json!({ "png": out, "frame": frame, "width": page.width, "height": page.height }))
+    write_png(out, width, height, &pixels)?;
+    Ok(json!({ "png": out, "frame": frame, "width": width, "height": height, "scale": page.scale }))
 }
 
 fn create_parent(out: &Path) -> Result<(), String> {
@@ -212,7 +231,7 @@ fn reads_audio_clips_from_the_report() {
 
 #[test]
 fn injects_props_as_config() {
-    let page = |props| Page { path: Path::new("x.html"), frames: 90, props, width: 1920, height: 1080, fps: 25 };
+    let page = |props| Page { path: Path::new("x.html"), frames: 90, props, width: 1920, height: 1080, scale: 1, fps: 25 };
     let html = with_config("<p>", &page(r#"{"code":"</script>"}"#)).unwrap();
     assert_eq!(
         html,
